@@ -1,0 +1,10 @@
+{
+  "description": "Connects Filipino students and emerging talent with paid, skill-based projects while helping businesses find talent, manage work, and build professional portfolios.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
