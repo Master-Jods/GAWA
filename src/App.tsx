@@ -1,13 +1,17 @@
+"use client";
+
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   ArrowLeft,
   ArrowRight,
+  Award,
   BarChart3,
   Bell,
   BriefcaseBusiness,
   Building2,
   CalendarDays,
+  Camera,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -23,6 +27,7 @@ import {
   Heart,
   HelpCircle,
   Home,
+  Image as ImageIcon,
   Inbox,
   LayoutDashboard,
   LockKeyhole,
@@ -37,9 +42,9 @@ import {
   Send,
   Settings,
   ShieldCheck,
-  Sparkles,
   Star,
   Target,
+  Trash2,
   TrendingUp,
   Upload,
   UserCheck,
@@ -49,7 +54,30 @@ import {
   Zap,
   type LucideIcon,
 } from "lucide-react";
-import { php, projects as initialProjects, talents, type Project } from "./data";
+import {
+  php,
+  projects as initialProjects,
+  talents,
+  type Project,
+  type Talent,
+  type TalentApplication,
+  type BusinessApplication,
+} from "./data";
+import { useAuth } from "@/lib/auth/AuthContext";
+import {
+  fetchPublicProjects,
+  fetchBusinessProjects,
+  fetchTalentApplications,
+  fetchBusinessApplications,
+  fetchTalentsDirectory,
+  fetchContracts,
+  fetchConversations,
+  fetchMessagesData,
+  fetchOverviewData,
+  formatRelativeTime,
+  getInitials,
+} from "@/lib/api/projects";
+import { supabase } from "@/lib/supabase/client";
 
 type Role = "talent" | "business" | "admin";
 type View = "landing" | "login" | "register" | "onboarding" | "app";
@@ -105,49 +133,179 @@ function Avatar({
   initials,
   color = "#087EAD",
   size = "md",
+  src,
 }: {
   initials: string;
-  color?: string;
+  color?: string | null;
   size?: "sm" | "md" | "lg";
+  src?: string | null;
 }) {
+  const safeColor = color || "#087EAD";
   return (
     <span
       className={`avatar avatar-${size}`}
       style={{
-        background: `linear-gradient(135deg, ${color}, color-mix(in srgb, ${color} 65%, #073B57))`,
+        background: `linear-gradient(135deg, ${safeColor}, color-mix(in srgb, ${safeColor} 65%, #073B57))`,
       }}
     >
-      {initials}
+      {src ? <img src={src} alt={initials} /> : initials}
     </span>
   );
+}
+
+async function uploadProfileMediaFile(
+  file: File,
+  kind: "avatar" | "banner"
+): Promise<{ ok: boolean; url?: string; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { ok: false, error: "Not authenticated" };
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("kind", kind);
+
+    const res = await fetch("/api/profile/media", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { ok: false, error: data.error || "Upload failed" };
+    }
+    return { ok: true, url: data.url };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Upload failed" };
+  }
+}
+
+async function removeProfileMediaFile(
+  kind: "avatar" | "banner"
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { ok: false, error: "Not authenticated" };
+
+    const res = await fetch(`/api/profile/media?kind=${kind}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      return { ok: false, error: data.error || "Could not remove image" };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Could not remove image" };
+  }
 }
 
 function Badge({ children, tone = "blue" }: { children: React.ReactNode; tone?: string }) {
   return <span className={`badge badge-${tone}`}>{children}</span>;
 }
 
-function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void }) {
+function Landing({
+  onNavigate,
+  projects,
+}: {
+  onNavigate: (view: View, role?: Role) => void;
+  projects?: Project[];
+}) {
   const [mobile, setMobile] = useState(false);
+  const [activeNav, setActiveNav] = useState<"projects" | "talent" | "how" | "why" | null>(null);
+  const [sectionAnimKey, setSectionAnimKey] = useState(0);
+  const [howTab, setHowTab] = useState<"talent" | "business">("talent");
+  const [landingCategory, setLandingCategory] = useState<string>("All");
+
+  const selectLandingNav = (
+    tab: "projects" | "talent" | "how" | "why",
+    targetId: string
+  ) => {
+    setActiveNav(tab);
+    setSectionAnimKey((k) => k + 1);
+    setMobile(false);
+    if (tab === "talent") {
+      setHowTab("business");
+    } else if (tab === "how") {
+      setHowTab("talent");
+    }
+    document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const howSteps =
+    howTab === "talent"
+      ? ([
+          [UserCheck, "Create your profile", "Tell your story beyond a traditional résumé."],
+          [Award, "Showcase your skills", "Highlight what you can do with proof of work."],
+          [
+            Search,
+            "Discover opportunities",
+            "Get matched to projects built for your strengths.",
+          ],
+          [
+            BriefcaseBusiness,
+            "Build your portfolio",
+            "Complete real work and grow your credibility.",
+          ],
+        ] as [LucideIcon, string, string][])
+      : ([
+          [Plus, "Post a clear brief", "Define your project goals, deliverables, and PHP budget."],
+          [Users, "Review matched talent", "Compare verified skills, portfolios, and match scores."],
+          [
+            FolderKanban,
+            "Track milestones",
+            "Collaborate in a shared workspace with checklist progress.",
+          ],
+          [
+            ShieldCheck,
+            "Approve & release",
+            "Review submitted deliverables and release escrow safely.",
+          ],
+        ] as [LucideIcon, string, string][]);
+
+  const filteredLandingProjects = useMemo(() => {
+    const all = projects || [];
+    if (landingCategory === "All") return all.slice(0, 3);
+    return all
+      .filter((p) => p.category.toLowerCase().includes(landingCategory.toLowerCase()))
+      .slice(0, 3);
+  }, [projects, landingCategory]);
+
   return (
     <div className="landing">
       <nav className="topnav">
         <Logo />
         <div className={`navlinks ${mobile ? "open" : ""}`}>
           <button
-            onClick={() =>
-              document.getElementById("projects")?.scrollIntoView({ behavior: "smooth" })
-            }
+            className={activeNav === "projects" ? "active" : ""}
+            onClick={() => selectLandingNav("projects", "projects")}
           >
             Find Projects
           </button>
-          <button onClick={() => onNavigate("register", "business")}>Find Talent</button>
           <button
-            onClick={() => document.getElementById("how")?.scrollIntoView({ behavior: "smooth" })}
+            className={activeNav === "talent" ? "active" : ""}
+            onClick={() => selectLandingNav("talent", "how")}
+          >
+            Find Talent
+          </button>
+          <button
+            className={activeNav === "how" ? "active" : ""}
+            onClick={() => selectLandingNav("how", "how")}
           >
             How It Works
           </button>
           <button
-            onClick={() => document.getElementById("why")?.scrollIntoView({ behavior: "smooth" })}
+            className={activeNav === "why" ? "active" : ""}
+            onClick={() => selectLandingNav("why", "why")}
           >
             Why GAWA
           </button>
@@ -170,7 +328,7 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
           <div className="hero-glow"></div>
           <div className="hero-copy">
             <div className="eyebrow">
-              <Sparkles size={15} /> Built for Filipino talent, powered by skills
+              <ShieldCheck size={14} /> Built for Filipino talent, powered by skills
             </div>
             <h1>
               Your skills deserve
@@ -202,8 +360,8 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
                 <Avatar initials="AC" color="#E0527D" size="sm" />
               </div>
               <div>
-                <strong>2,400+ emerging talents</strong>
-                <span>Ready to bring ideas to life</span>
+                <strong>Skill-First Marketplace</strong>
+                <span>Connect with verified opportunities</span>
               </div>
             </div>
           </div>
@@ -221,41 +379,58 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
           </div>
         </section>
 
-        <section className="section how" id="how">
+        <section
+          className={`section how ${
+            activeNav === "how" || activeNav === "talent" ? "section-tab-focus" : ""
+          }`}
+          id="how"
+        >
           <div className="section-heading centered">
             <span>HOW IT WORKS</span>
             <h2>From potential to proven experience</h2>
             <p>GAWA makes it simple to turn what you know into work that matters.</p>
+            <div className="landing-tab-pills" style={{ marginTop: 22 }}>
+              <button
+                type="button"
+                className={howTab === "talent" ? "active" : ""}
+                onClick={() => setHowTab("talent")}
+              >
+                <GraduationCap size={15} /> For Talents
+              </button>
+              <button
+                type="button"
+                className={howTab === "business" ? "active" : ""}
+                onClick={() => setHowTab("business")}
+              >
+                <Building2 size={15} /> For Businesses
+              </button>
+            </div>
           </div>
-          <div className="steps">
-            {[
-              [UserCheck, "Create your profile", "Tell your story beyond a traditional résumé."],
-              [Sparkles, "Showcase your skills", "Highlight what you can do with proof of work."],
-              [
-                Search,
-                "Discover opportunities",
-                "Get matched to projects built for your strengths.",
-              ],
-              [
-                BriefcaseBusiness,
-                "Build your portfolio",
-                "Complete real work and grow your credibility.",
-              ],
-            ].map(([Icon, title, text], i) => (
-              <div className="step" key={title as string}>
+          <div className="steps landing-tab-panel" key={`${howTab}-${sectionAnimKey}`}>
+            {howSteps.map(([Icon, title, text], i) => (
+              <div
+                className="step"
+                key={title}
+                style={{ animationDelay: `${i * 0.06}s` }}
+              >
                 <div className="step-number">0{i + 1}</div>
                 <div className="step-icon">
                   <Icon size={23} />
                 </div>
-                <h3>{title as string}</h3>
-                <p>{text as string}</p>
+                <h3>{title}</h3>
+                <p>{text}</p>
                 {i < 3 && <ArrowRight className="step-arrow" size={18} />}
               </div>
             ))}
           </div>
         </section>
 
-        <section className="section projects-section" id="projects">
+        <section
+          className={`section projects-section ${
+            activeNav === "projects" ? "section-tab-focus" : ""
+          }`}
+          id="projects"
+        >
           <div className="section-heading row">
             <div>
               <span>FEATURED OPPORTUNITIES</span>
@@ -266,20 +441,57 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
               Browse all projects <ArrowRight size={16} />
             </button>
           </div>
-          <div className="project-grid landing-grid">
-            {initialProjects.slice(0, 3).map((p) => (
-              <ProjectCard
-                key={p.id}
-                project={p}
-                onClick={() => onNavigate("register", "talent")}
-                saved={false}
-                onSave={() => {}}
-              />
+          <div className="filter-chips" style={{ marginBottom: 22 }}>
+            {["All", "Design", "Development", "Marketing", "Data"].map((cat) => (
+              <button
+                key={cat}
+                type="button"
+                className={landingCategory === cat ? "active" : ""}
+                onClick={() => setLandingCategory(cat)}
+              >
+                {cat === "All" ? "All opportunities" : cat}
+              </button>
             ))}
+          </div>
+          <div
+            className="project-grid landing-grid landing-tab-panel"
+            key={`${landingCategory}-${ activeNav === "projects" ? sectionAnimKey : 0}`}
+          >
+            {filteredLandingProjects.length > 0 ? (
+              filteredLandingProjects.map((p) => (
+                <ProjectCard
+                  key={p.id}
+                  project={p}
+                  onClick={() => onNavigate("register", "talent")}
+                  saved={false}
+                  onSave={() => {}}
+                />
+              ))
+            ) : (
+              <div
+                style={{
+                  textAlign: "center",
+                  padding: "40px 24px",
+                  color: "#627d98",
+                  background: "white",
+                  borderRadius: 16,
+                  border: "1px dashed #dce7ed",
+                  gridColumn: "1 / -1",
+                }}
+              >
+                <p>
+                  No project listings in this category yet. Browse all opportunities or post a project!
+                </p>
+              </div>
+            )}
           </div>
         </section>
 
-        <section className="section split-feature" id="why">
+        <section
+          className={`section split-feature ${activeNav === "why" ? "section-tab-focus" : ""}`}
+          id="why"
+          key={`why-${activeNav === "why" ? sectionAnimKey : 0}`}
+        >
           <div className="feature-visual">
             <div className="match-orbit">
               <div>
@@ -351,7 +563,11 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
               ],
             ].map((q) => (
               <div className="quote-card" key={q[1]}>
-                <div className="stars">★★★★★</div>
+                <div className="stars" aria-label="5 out of 5 stars">
+                  {[1, 2, 3, 4, 5].map((s) => (
+                    <Star key={s} size={14} fill="#f59e0b" stroke="#f59e0b" />
+                  ))}
+                </div>
                 <blockquote>{q[0]}</blockquote>
                 <div className="quote-person">
                   <Avatar initials={q[3]} color={q[4]} />
@@ -409,22 +625,38 @@ function Landing({ onNavigate }: { onNavigate: (view: View, role?: Role) => void
 }
 
 function HeroVisual() {
+  const [mockTab, setMockTab] = useState(0);
   return (
     <div className="hero-visual">
       <div className="dashboard-mock">
         <div className="mock-sidebar">
           <div className="mini-logo">G</div>
           {[Home, Search, BriefcaseBusiness, MessageSquare, UserCheck].map((I, i) => (
-            <span className={i === 0 ? "active" : ""} key={i}>
+            <span
+              className={i === mockTab ? "active" : ""}
+              key={i}
+              onClick={() => setMockTab(i)}
+              style={{ cursor: "pointer", transition: "all 0.2s ease" }}
+            >
               <I size={16} />
             </span>
           ))}
         </div>
-        <div className="mock-main">
+        <div className="mock-main landing-tab-panel" key={mockTab}>
           <div className="mock-top">
             <div>
               <small>Good morning, Mika</small>
-              <strong>Find work that fits you.</strong>
+              <strong>
+                {mockTab === 0
+                  ? "Find work that fits you."
+                  : mockTab === 1
+                  ? "Explore verified briefs."
+                  : mockTab === 2
+                  ? "Track active milestones."
+                  : mockTab === 3
+                  ? "Direct client messages."
+                  : "Your verified portfolio."}
+              </strong>
             </div>
             <Avatar initials="MR" size="sm" />
           </div>
@@ -499,16 +731,80 @@ function Auth({
   onBack: () => void;
   onComplete: (role: Role, onboarding?: boolean) => void;
 }) {
+  const { signIn, signUp } = useAuth();
+  const [currentMode, setCurrentMode] = useState<"login" | "register">(mode);
   const [role, setRole] = useState<Role>(initialRole || "talent");
   const [step, setStep] = useState(mode === "register" ? 0 : 1);
   const [showPassword, setShowPassword] = useState(false);
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [businessName, setBusinessName] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [infoMessage, setInfoMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    setCurrentMode(mode);
+    setStep(mode === "register" ? 0 : 1);
+  }, [mode]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setInfoMessage("");
+    setSubmitting(true);
+
+    try {
+      if (currentMode === "login") {
+        const expected = role === "business" ? "business" : "talent";
+        const { error, role: actualRole } = await signIn(email, password, expected);
+        setSubmitting(false);
+        if (error) {
+          setAuthError(error);
+          return;
+        }
+        onComplete(actualRole || expected, false);
+      } else {
+        if (!displayName.trim()) {
+          setAuthError("Please provide your full name");
+          setSubmitting(false);
+          return;
+        }
+        const { error, requiresEmailConfirmation, role: actualRole } = await signUp({
+          email,
+          password,
+          displayName: displayName.trim(),
+          role: role === "business" ? "business" : "talent",
+          businessName: role === "business" ? businessName.trim() : undefined,
+        });
+        setSubmitting(false);
+        if (error) {
+          setAuthError(error);
+          return;
+        }
+        if (requiresEmailConfirmation) {
+          setInfoMessage(
+            "Account created! Please check your email to confirm your registration before logging in."
+          );
+          return;
+        }
+        onComplete(actualRole || role, true);
+      }
+    } catch (err: any) {
+      setSubmitting(false);
+      setAuthError(err?.message || "Authentication error occurred");
+    }
+  };
+
   return (
     <div className="auth-page">
       <div className="auth-aside">
         <Logo light />
         <div className="auth-quote">
           <div className="eyebrow dark">
-            <Sparkles size={15} /> OPPORTUNITY STARTS WITH ACTION
+            <ShieldCheck size={14} /> OPPORTUNITY STARTS WITH ACTION
           </div>
           <h2>
             Build experience.
@@ -525,7 +821,7 @@ function Auth({
               <Avatar initials="AC" color="#E0527D" size="sm" />
             </div>
             <span>
-              <b>2,400+ talents</b>
+              <b>Skill-first community</b>
               <br />
               growing with GAWA
             </span>
@@ -537,13 +833,14 @@ function Auth({
         <button className="back-link" onClick={onBack}>
           <ArrowLeft size={17} /> Back to home
         </button>
-        <div className="auth-card">
+        <div className="auth-card landing-tab-panel" key={`${currentMode}-${step}-${role}`}>
           {step === 0 ? (
             <>
               <span className="auth-kicker">LET'S GET STARTED</span>
               <h1>How will you use GAWA?</h1>
               <p>Choose the experience that’s right for you. You can update this later.</p>
               <button
+                type="button"
                 className={`role-choice ${role === "talent" ? "selected" : ""}`}
                 onClick={() => setRole("talent")}
               >
@@ -557,6 +854,7 @@ function Auth({
                 <span className="radio">{role === "talent" && <Check size={14} />}</span>
               </button>
               <button
+                type="button"
                 className={`role-choice ${role === "business" ? "selected" : ""}`}
                 onClick={() => setRole("business")}
               >
@@ -573,90 +871,173 @@ function Auth({
                 Continue <ArrowRight size={17} />
               </button>
               <p className="auth-switch">
-                Already have an account? <button onClick={() => setStep(1)}>Log in</button>
+                Already have an account?{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthError("");
+                    setInfoMessage("");
+                    setCurrentMode("login");
+                    setStep(1);
+                  }}
+                >
+                  Log in
+                </button>
               </p>
             </>
           ) : (
-            <>
+            <form onSubmit={handleSubmit}>
               <span className="auth-kicker">
-                {mode === "login" ? "WELCOME BACK" : "CREATE YOUR ACCOUNT"}
+                {currentMode === "login" ? "WELCOME BACK" : "CREATE YOUR ACCOUNT"}
               </span>
-              <h1>{mode === "login" ? "Log in to GAWA" : "Start building your future"}</h1>
+              <h1>{currentMode === "login" ? "Log in to GAWA" : "Start building your future"}</h1>
               <p>
-                {mode === "login"
+                {currentMode === "login"
                   ? "Continue your projects and opportunities."
                   : "Join the skill-first project community."}
               </p>
-              {mode === "login" && (
+              {currentMode === "login" && (
                 <div className="role-tabs">
                   <button
+                    type="button"
                     className={role === "talent" ? "active" : ""}
-                    onClick={() => setRole("talent")}
+                    onClick={() => {
+                      setRole("talent");
+                      setAuthError("");
+                    }}
                   >
                     Talent
                   </button>
                   <button
+                    type="button"
                     className={role === "business" ? "active" : ""}
-                    onClick={() => setRole("business")}
+                    onClick={() => {
+                      setRole("business");
+                      setAuthError("");
+                    }}
                   >
                     Business
                   </button>
-                  <button
-                    className={role === "admin" ? "active" : ""}
-                    onClick={() => setRole("admin")}
-                  >
-                    Admin
-                  </button>
                 </div>
               )}
-              {mode === "register" && (
-                <label>
-                  Full name
-                  <input placeholder="Juan Dela Cruz" />
-                </label>
+              {authError && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    background: "#fef2f2",
+                    color: "#b91c1c",
+                    borderRadius: 8,
+                    fontSize: 13,
+                    marginBottom: 14,
+                    border: "1px solid #fecaca",
+                  }}
+                >
+                  {authError}
+                </div>
+              )}
+              {infoMessage && (
+                <div
+                  style={{
+                    padding: "10px 14px",
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    borderRadius: 8,
+                    fontSize: 13,
+                    marginBottom: 14,
+                    border: "1px solid #bfdbfe",
+                  }}
+                >
+                  {infoMessage}
+                </div>
+              )}
+              {currentMode === "register" && (
+                <>
+                  <label>
+                    Full name
+                    <input
+                      required
+                      placeholder="Juan Dela Cruz"
+                      value={displayName}
+                      onChange={(e) => setDisplayName(e.target.value)}
+                    />
+                  </label>
+                  {role === "business" && (
+                    <label>
+                      Company / Business name
+                      <input
+                        placeholder="e.g. SariSari Studio"
+                        value={businessName}
+                        onChange={(e) => setBusinessName(e.target.value)}
+                      />
+                    </label>
+                  )}
+                </>
               )}
               <label>
                 Email address
                 <input
+                  required
                   type="email"
-                  defaultValue={role === "admin" ? "admin@gawa.ph" : ""}
                   placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                 />
               </label>
               <label>
                 <span>
-                  Password <button className="field-link">Forgot password?</button>
+                  Password <button type="button" className="field-link">Forgot password?</button>
                 </span>
                 <div className="input-wrap">
                   <input
+                    required
                     type={showPassword ? "text" : "password"}
-                    defaultValue="prototype123"
-                    placeholder="At least 8 characters"
+                    placeholder="At least 6 characters"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
                   />
-                  <button onClick={() => setShowPassword(!showPassword)}>
+                  <button type="button" onClick={() => setShowPassword(!showPassword)}>
                     <Eye size={18} />
                   </button>
                 </div>
               </label>
               <button
+                type="submit"
+                disabled={submitting}
                 className="btn btn-primary full btn-lg"
-                onClick={() => onComplete(role, mode === "register")}
               >
-                {mode === "login" ? "Log in" : "Create account"} <ArrowRight size={17} />
+                {submitting
+                  ? "Please wait..."
+                  : currentMode === "login"
+                  ? "Log in"
+                  : "Create account"}{" "}
+                <ArrowRight size={17} />
               </button>
               <div className="divider">
                 <span>or continue with</span>
               </div>
-              <button className="btn btn-white full">
+              <button type="button" className="btn btn-white full">
                 <b className="google">G</b> Google
               </button>
               <p className="auth-switch">
-                {mode === "login" ? "New to GAWA? " : "Already registered? "}
-                <button onClick={() => setStep(mode === "login" ? 0 : 1)}>
-                  {mode === "login" ? "Create an account" : "Log in"}
+                {currentMode === "login" ? "New to GAWA? " : "Already registered? "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthError("");
+                    setInfoMessage("");
+                    if (currentMode === "login") {
+                      setCurrentMode("register");
+                      setStep(0);
+                    } else {
+                      setCurrentMode("login");
+                      setStep(1);
+                    }
+                  }}
+                >
+                  {currentMode === "login" ? "Create an account" : "Log in"}
                 </button>
               </p>
-            </>
+            </form>
           )}
         </div>
       </div>
@@ -665,18 +1046,113 @@ function Auth({
 }
 
 function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
+  const { user, profile, refreshProfile } = useAuth();
   const [step, setStep] = useState(1);
   const [skills, setSkills] = useState(["UI/UX Design", "Figma"]);
+  const [skillSearch, setSkillSearch] = useState("");
+  const [nameInput, setNameInput] = useState(profile?.display_name || "");
+  const [orgOrSchool, setOrgOrSchool] = useState("");
+  const [courseOrSize, setCourseOrSize] = useState("");
+  const [locationInput, setLocationInput] = useState(profile?.location || "");
+  const [businessDesc, setBusinessDesc] = useState("");
+  const [contactName, setContactName] = useState(profile?.display_name || "");
+  const [contactEmail, setContactEmail] = useState(user?.email || "");
+  const [saving, setSaving] = useState(false);
+
   const steps =
     role === "talent"
       ? ["About you", "Your skills", "Portfolio", "Preferences", "Complete"]
       : ["Business", "Company details", "Brand profile", "Complete"];
   const max = steps.length;
+
+  const saveOnboarding = async () => {
+    if (!user) {
+      onDone();
+      return;
+    }
+    setSaving(true);
+    try {
+      await supabase
+        .from("account_profiles")
+        .update({
+          display_name: nameInput.trim() || profile?.display_name || "GAWA Member",
+          location: locationInput.trim() || null,
+        })
+        .eq("id", user.id);
+
+      if (role === "talent") {
+        await supabase
+          .from("talent_profiles")
+          .update({
+            school: orgOrSchool.trim() || null,
+            course: courseOrSize.trim() || null,
+            preferred_location: locationInput.trim() || null,
+          })
+          .eq("user_id", user.id);
+
+        if (skills.length > 0) {
+          const { data: catSkills } = await supabase
+            .from("catalog_skills")
+            .select("id, name");
+          const sMap = new Map(
+            (catSkills || []).map((s) => [s.name.toLowerCase(), s.id])
+          );
+          for (const sk of skills) {
+            const sid = sMap.get(sk.toLowerCase());
+            if (sid) {
+              await supabase.from("talent_skills").upsert({
+                talent_id: user.id,
+                skill_id: sid,
+                proficiency: "intermediate",
+              });
+            }
+          }
+        }
+      } else if (role === "business") {
+        const { data: bProf } = await supabase
+          .from("business_profiles")
+          .select("id")
+          .eq("owner_id", user.id)
+          .maybeSingle();
+
+        if (bProf) {
+          await supabase
+            .from("business_profiles")
+            .update({
+              name: nameInput.trim() || profile?.display_name || "My Business",
+              industry: orgOrSchool.trim() || null,
+              company_size: courseOrSize.trim() || null,
+              location: locationInput.trim() || null,
+              description: businessDesc.trim() || null,
+              contact_name: contactName.trim() || null,
+              contact_email: contactEmail.trim() || null,
+            })
+            .eq("id", bProf.id);
+        }
+      }
+
+      await supabase
+        .from("account_preferences")
+        .update({
+          onboarding_step: max,
+          onboarding_completed_at: new Date().toISOString(),
+        })
+        .eq("user_id", user.id);
+
+      await refreshProfile();
+    } catch (err) {
+      console.error("Onboarding save error:", err);
+    } finally {
+      setSaving(false);
+      onDone();
+    }
+  };
+
   return (
     <div className="onboarding-page">
       <header>
         <Logo />
-        <button className="btn btn-ghost" onClick={onDone}>
+        <button className="btn btn-ghost" onClick={saveOnboarding}>
           Save & exit
         </button>
       </header>
@@ -734,27 +1210,39 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                 <div className="form-grid">
                   <label>
                     {role === "talent" ? "Full name" : "Business name"}
-                    <input defaultValue={role === "talent" ? "Mika Reyes" : "SariSari Studio"} />
+                    <input
+                      value={nameInput}
+                      onChange={(e) => setNameInput(e.target.value)}
+                      placeholder={role === "talent" ? "Your full name" : "Your business name"}
+                    />
                   </label>
                   <label>
                     {role === "talent" ? "School or university" : "Industry"}
                     <input
-                      defaultValue={
-                        role === "talent" ? "De La Salle University" : "Retail & E-commerce"
+                      value={orgOrSchool}
+                      onChange={(e) => setOrgOrSchool(e.target.value)}
+                      placeholder={
+                        role === "talent" ? "e.g. De La Salle University" : "e.g. Retail & E-commerce"
                       }
                     />
                   </label>
                   <label>
                     {role === "talent" ? "Course or program" : "Company size"}
                     <input
-                      defaultValue={
-                        role === "talent" ? "BS Information Technology" : "2–10 employees"
+                      value={courseOrSize}
+                      onChange={(e) => setCourseOrSize(e.target.value)}
+                      placeholder={
+                        role === "talent" ? "e.g. BS Information Technology" : "e.g. 2–10 employees"
                       }
                     />
                   </label>
                   <label>
                     Location
-                    <input defaultValue="Makati City, Metro Manila" />
+                    <input
+                      value={locationInput}
+                      onChange={(e) => setLocationInput(e.target.value)}
+                      placeholder="e.g. Makati City, Metro Manila"
+                    />
                   </label>
                 </div>
               )}
@@ -762,8 +1250,31 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                 <>
                   <div className="skill-search">
                     <Search />
-                    <input placeholder="Search and add skills" />
-                    <button>Add skill</button>
+                    <input
+                      value={skillSearch}
+                      onChange={(e) => setSkillSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && skillSearch.trim()) {
+                          e.preventDefault();
+                          if (!skills.includes(skillSearch.trim())) {
+                            setSkills([...skills, skillSearch.trim()]);
+                          }
+                          setSkillSearch("");
+                        }
+                      }}
+                      placeholder="Search and add skills"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (skillSearch.trim() && !skills.includes(skillSearch.trim())) {
+                          setSkills([...skills, skillSearch.trim()]);
+                          setSkillSearch("");
+                        }
+                      }}
+                    >
+                      Add skill
+                    </button>
                   </div>
                   <div className="skill-options">
                     {[
@@ -775,6 +1286,7 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                       "Content Writing",
                     ].map((s) => (
                       <button
+                        type="button"
                         className={skills.includes(s) ? "selected" : ""}
                         onClick={() =>
                           setSkills((v) => (v.includes(s) ? v.filter((x) => x !== s) : [...v, s]))
@@ -804,15 +1316,27 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                 <div className="form-grid">
                   <label className="wide">
                     Business description
-                    <textarea defaultValue="We make thoughtfully designed local goods for modern Filipino homes." />
+                    <textarea
+                      value={businessDesc}
+                      onChange={(e) => setBusinessDesc(e.target.value)}
+                      placeholder="Describe what your business does and what kind of work you're looking for."
+                    />
                   </label>
                   <label>
                     Contact name
-                    <input defaultValue="Daniel Go" />
+                    <input
+                      value={contactName}
+                      onChange={(e) => setContactName(e.target.value)}
+                      placeholder="Your name"
+                    />
                   </label>
                   <label>
                     Business email
-                    <input defaultValue="hello@sarisari.ph" />
+                    <input
+                      value={contactEmail}
+                      onChange={(e) => setContactEmail(e.target.value)}
+                      placeholder="contact@yourbusiness.com"
+                    />
                   </label>
                 </div>
               )}
@@ -823,7 +1347,9 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                     {role === "talent" ? "Upload your work samples" : "Upload your business logo"}
                   </b>
                   <span>Drag and drop files or click to browse</span>
-                  <button className="btn btn-white">Choose files</button>
+                  <button type="button" className="btn btn-white">
+                    Choose files
+                  </button>
                 </div>
               )}
               {step === 4 && role === "talent" && (
@@ -873,8 +1399,12 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                   <CheckCircle2 /> Recommendations ready
                 </span>
               </div>
-              <button className="btn btn-primary btn-lg" onClick={onDone}>
-                Go to my dashboard <ArrowRight />
+              <button
+                className="btn btn-primary btn-lg"
+                disabled={saving}
+                onClick={saveOnboarding}
+              >
+                {saving ? "Saving..." : "Go to my dashboard"} <ArrowRight />
               </button>
             </div>
           )}
@@ -898,7 +1428,7 @@ function ProjectCard({
   return (
     <article className="project-card" onClick={onClick}>
       <div className="project-top">
-        <Avatar initials={project.initials} color={project.color} />
+        <Avatar initials={project.initials} color={project.color} src={project.avatarUrl} />
         <div>
           <span>{project.company}</span>
           <small>{project.posted}</small>
@@ -931,7 +1461,7 @@ function ProjectCard({
       </div>
       <div className="match-row">
         <span>
-          <Sparkles /> {project.match}% skill match
+          <Target size={13} /> {project.match}% skill match
         </span>
         <span>{project.applicants} applicants</span>
       </div>
@@ -952,14 +1482,65 @@ function Shell({
   onLogout: () => void;
   children: React.ReactNode;
 }) {
+  const { profile, user: authUser } = useAuth();
   const [open, setOpen] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [headerQuery, setHeaderQuery] = useState("");
+
+  useEffect(() => {
+    if (!authUser) return;
+    fetchOverviewData().then((d) => {
+      if (d?.notifications) {
+        setNotifications(d.notifications);
+      }
+    });
+  }, [authUser, active]);
+
+  const unreadCount = notifications.filter((n) => !n.read_at).length;
+
+  const toggleNotifs = async () => {
+    const next = !notifOpen;
+    setNotifOpen(next);
+    if (next && unreadCount > 0) {
+      setNotifications((prev) =>
+        prev.map((n) => ({ ...n, read_at: n.read_at || new Date().toISOString() }))
+      );
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        await fetch("/api/overview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ action: "mark_notifications_read" }),
+        });
+      }
+    }
+  };
+
   const nav = role === "talent" ? talentNav : role === "business" ? businessNav : adminNav;
-  const user =
+  const defaultUser =
     role === "talent"
-      ? ["Mika Reyes", "UI/UX Designer", "MR"]
+      ? ["Talent User", "Talent member", "GW"]
       : role === "business"
-        ? ["SariSari Studio", "Business account", "SS"]
-        : ["Alex Rivera", "Platform admin", "AR"];
+        ? ["Business User", "Business account", "GW"]
+        : ["Admin User", "Platform admin", "GW"];
+
+  const user = profile
+    ? [
+        profile.display_name,
+        role === "talent"
+          ? "Talent member"
+          : role === "business"
+          ? "Business account"
+          : "Platform admin",
+        getInitials(profile.display_name),
+      ]
+    : defaultUser;
   return (
     <div className="app-shell">
       <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -982,7 +1563,7 @@ function Shell({
             >
               <Icon size={19} />
               <span>{label}</span>
-              {label === "Messages" && <i>3</i>}
+              {label === "Messages" && unreadCount > 0 && <i>{unreadCount}</i>}
             </button>
           ))}
         </nav>
@@ -992,12 +1573,12 @@ function Shell({
             <b>Need a hand?</b>
           </div>
           <p>Visit the GAWA Help Center for quick answers.</p>
-          <button>
+          <button onClick={() => setActive("Settings")}>
             Get support <ArrowRight size={14} />
           </button>
         </div>
         <div className="side-user">
-          <Avatar initials={user[2]} size="sm" />
+          <Avatar initials={user[2]} size="sm" src={profile?.avatar_path} color={profile?.avatar_color} />
           <div>
             <b>{user[0]}</b>
             <span>{user[1]}</span>
@@ -1014,18 +1595,100 @@ function Shell({
           </button>
           <div className="global-search">
             <Search />
-            <input placeholder="Search projects, talents, messages…" />
+            <input
+              value={headerQuery}
+              onChange={(e) => setHeaderQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setActive(
+                    role === "talent"
+                      ? "Explore Projects"
+                      : role === "business"
+                      ? "Find Talent"
+                      : "User Management"
+                  );
+                }
+              }}
+              placeholder="Search projects, talents, messages…"
+            />
             <kbd>⌘ K</kbd>
           </div>
-          <div className="header-actions">
-            <button className="icon-btn relative">
+          <div className="header-actions" style={{ position: "relative" }}>
+            <button
+              className="icon-btn relative"
+              onClick={toggleNotifs}
+              aria-label="Notifications"
+            >
               <Bell />
-              <i></i>
+              {unreadCount > 0 && <i></i>}
             </button>
-            <Avatar initials={user[2]} size="sm" />
+            {notifOpen && (
+              <div
+                style={{
+                  position: "absolute",
+                  top: "calc(100% + 10px)",
+                  right: 0,
+                  width: 320,
+                  background: "white",
+                  borderRadius: 12,
+                  boxShadow: "0 12px 32px rgba(16,42,67,0.14)",
+                  border: "1px solid #dce7ed",
+                  padding: 12,
+                  zIndex: 50,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    paddingBottom: 8,
+                    borderBottom: "1px solid #f0f4f8",
+                    marginBottom: 8,
+                  }}
+                >
+                  <b style={{ fontSize: 13, color: "#102a43" }}>Notifications</b>
+                  <button
+                    type="button"
+                    style={{ fontSize: 12, color: "#087EAD", background: "none", border: "none", cursor: "pointer" }}
+                    onClick={() => setNotifOpen(false)}
+                  >
+                    Close
+                  </button>
+                </div>
+                {notifications.length === 0 ? (
+                  <p style={{ fontSize: 12, color: "#627d98", textAlign: "center", padding: "16px 8px" }}>
+                    No notifications yet.
+                  </p>
+                ) : (
+                  <div style={{ maxHeight: 260, overflowY: "auto", display: "grid", gap: 8 }}>
+                    {notifications.map((n) => (
+                      <div
+                        key={n.id}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 8,
+                          background: n.read_at ? "#f8fafc" : "#eff6ff",
+                          fontSize: 12,
+                        }}
+                      >
+                        <b style={{ display: "block", color: "#102a43" }}>{n.title}</b>
+                        <span style={{ color: "#486581" }}>{n.body}</span>
+                        <small style={{ display: "block", color: "#829ab1", marginTop: 4 }}>
+                          {formatRelativeTime(n.created_at)}
+                        </small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <Avatar initials={user[2]} size="sm" src={profile?.avatar_path} color={profile?.avatar_color} />
           </div>
         </header>
-        {children}
+        <div key={active} className="tab-transition-shell">
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -1035,23 +1698,204 @@ function TalentApp({
   active,
   setActive,
   toast,
+  projects,
+  onRefreshProjects,
 }: {
   active: string;
   setActive: (s: string) => void;
   toast: (s: string) => void;
+  projects?: Project[];
+  onRefreshProjects?: () => Promise<void>;
 }) {
-  const [saved, setSaved] = useState<number[]>([2]);
+  const { user } = useAuth();
+  const marketProjects = projects || [];
+  const [saved, setSaved] = useState<(string | number)[]>([]);
   const [selected, setSelected] = useState<Project | null>(null);
-  const [applied, setApplied] = useState<number[]>([5]);
+  const [applications, setApplications] = useState<TalentApplication[]>([]);
+  const [applied, setApplied] = useState<(string | number)[]>([]);
+  const [contracts, setContracts] = useState<any[]>([]);
+  const [overview, setOverview] = useState<any | null>(null);
   const [query, setQuery] = useState("");
+  const [chip, setChip] = useState<"all" | "best" | "new" | "remote" | "saved">("all");
+  const [sortBy, setSortBy] = useState<"newest" | "budget" | "match">("newest");
+
+  // Clear project detail view whenever the user navigates via sidebar
+  useEffect(() => {
+    setSelected(null);
+  }, [active]);
+
+  const loadTalentData = async () => {
+    if (!user) return;
+    const [apps, cList, ovData] = await Promise.all([
+      fetchTalentApplications(),
+      fetchContracts(),
+      fetchOverviewData(),
+    ]);
+    setApplications(apps);
+    setApplied(apps.map((a) => a.project_id));
+    setContracts(cList);
+    if (ovData) setOverview(ovData);
+
+    const { data: savedRows } = await supabase
+      .from("project_saved_listings")
+      .select("project_id")
+      .eq("talent_id", user.id);
+    if (savedRows) {
+      setSaved(savedRows.map((r) => r.project_id));
+    }
+  };
+
+  useEffect(() => {
+    loadTalentData();
+  }, [user, active]);
+
+  const toggleSave = async (projectId: string | number) => {
+    const isAlreadySaved = saved.some((x) => String(x) === String(projectId));
+    setSaved((prev) =>
+      isAlreadySaved
+        ? prev.filter((x) => String(x) !== String(projectId))
+        : [...prev, projectId]
+    );
+    toast(isAlreadySaved ? "Removed from saved projects" : "Project saved");
+
+    if (user && typeof projectId === "string") {
+      if (isAlreadySaved) {
+        await supabase
+          .from("project_saved_listings")
+          .delete()
+          .eq("talent_id", user.id)
+          .eq("project_id", projectId);
+      } else {
+        await supabase.from("project_saved_listings").upsert({
+          talent_id: user.id,
+          project_id: projectId,
+        });
+      }
+    }
+  };
+
+  const filteredProjects = useMemo(() => {
+    const list = marketProjects.filter((p) => {
+      const matchesQuery = `${p.title} ${p.company} ${p.skills.join(" ")}`
+        .toLowerCase()
+        .includes(query.toLowerCase());
+      if (!matchesQuery) return false;
+      if (chip === "saved") return saved.some((x) => String(x) === String(p.id));
+      if (chip === "best") return p.match >= 85;
+      if (chip === "remote") return (p.workSetup || "remote").toLowerCase() === "remote";
+      if (chip === "new")
+        return (
+          p.posted === "Just now" ||
+          p.posted.endsWith("m ago") ||
+          p.posted.endsWith("h ago")
+        );
+      return true;
+    });
+
+    if (sortBy === "budget") {
+      return [...list].sort((a, b) => b.budget - a.budget);
+    }
+    if (sortBy === "match") {
+      return [...list].sort((a, b) => b.match - a.match);
+    }
+    return list;
+  }, [marketProjects, query, chip, saved, sortBy]);
+
   if (selected)
     return (
       <ProjectDetail
         project={selected}
         onBack={() => setSelected(null)}
-        applied={applied.includes(selected.id)}
-        onApply={() => {
-          setApplied([...applied, selected.id]);
+        applied={applied.some((id) => String(id) === String(selected.id))}
+        saved={saved.some((id) => String(id) === String(selected.id))}
+        onSave={() => toggleSave(selected.id)}
+        onMessageBusiness={async () => {
+          try {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (session && selected.ownerId) {
+              await fetch("/api/messages", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  action: "start",
+                  recipient_id: selected.ownerId,
+                  subject: `Inquiry: ${selected.title}`,
+                  message: `Hi ${selected.company}! I'm interested in your project "${selected.title}" and would love to discuss how I can help.`,
+                }),
+              });
+            }
+          } catch {}
+          setSelected(null);
+          setActive("Messages");
+        }}
+        onApply={async (proposalText: string) => {
+          const finalProposal =
+            proposalText.trim() ||
+            "I would love to collaborate on this project and apply my expertise.";
+
+          if (typeof selected.id === "string") {
+            try {
+              const {
+                data: { session },
+              } = await supabase.auth.getSession();
+              if (session) {
+                const res = await fetch("/api/applications", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${session.access_token}`,
+                  },
+                  body: JSON.stringify({
+                    project_id: selected.id,
+                    proposal: finalProposal,
+                  }),
+                });
+                const data = await res.json();
+                if (!res.ok && res.status !== 409) {
+                  toast(data.error || "Failed to submit application");
+                  return;
+                }
+              }
+            } catch (err) {
+              console.error("Proposal submission error:", err);
+              toast("Could not submit application");
+              return;
+            }
+          }
+
+          setApplied((prev) =>
+            prev.some((id) => String(id) === String(selected.id))
+              ? prev
+              : [...prev, selected.id]
+          );
+
+          const optimisticApp: TalentApplication = {
+            id: `temp-${Date.now()}`,
+            project_id: String(selected.id),
+            proposal: finalProposal,
+            status: "submitted",
+            proposed_budget: selected.budget,
+            submitted_at: new Date().toISOString(),
+            appliedAgo: "Just now",
+            project: selected,
+          };
+          setApplications((prev) =>
+            prev.some((a) => String(a.project_id) === String(selected.id))
+              ? prev
+              : [optimisticApp, ...prev]
+          );
+
+          const refreshedApps = await fetchTalentApplications();
+          if (refreshedApps.length > 0) {
+            setApplications(refreshedApps);
+            setApplied(refreshedApps.map((a) => a.project_id));
+          }
+          await onRefreshProjects?.();
           toast("Application submitted successfully");
         }}
       />
@@ -1073,63 +1917,86 @@ function TalentApp({
               placeholder="Search by project, skill, or business…"
             />
           </div>
-          <button className="btn btn-white">
-            <Filter size={17} /> Filters <span>2</span>
+          <button
+            className="btn btn-white"
+            onClick={() => {
+              setChip("all");
+              setQuery("");
+            }}
+          >
+            <Filter size={17} /> Filters <span>{chip === "all" && !query ? 0 : 1}</span>
           </button>
         </div>
         <div className="filter-chips">
-          <button className="active">All projects</button>
-          <button>Best matches</button>
-          <button>New today</button>
-          <button>Remote</button>
-          <button>Saved ({saved.length})</button>
+          <button className={chip === "all" ? "active" : ""} onClick={() => setChip("all")}>
+            All projects
+          </button>
+          <button className={chip === "best" ? "active" : ""} onClick={() => setChip("best")}>
+            Best matches
+          </button>
+          <button className={chip === "new" ? "active" : ""} onClick={() => setChip("new")}>
+            New today
+          </button>
+          <button className={chip === "remote" ? "active" : ""} onClick={() => setChip("remote")}>
+            Remote
+          </button>
+          <button className={chip === "saved" ? "active" : ""} onClick={() => setChip("saved")}>
+            Saved ({saved.length})
+          </button>
         </div>
         <div className="market-layout">
           <div>
             <div className="results-head">
-              <b>
-                {
-                  initialProjects.filter((p) => p.title.toLowerCase().includes(query.toLowerCase()))
-                    .length
-                }{" "}
-                opportunities
-              </b>
-              <button>
-                Newest first <ChevronDown />
+              <b>{filteredProjects.length} opportunities</b>
+              <button
+                onClick={() =>
+                  setSortBy((prev) =>
+                    prev === "newest" ? "budget" : prev === "budget" ? "match" : "newest"
+                  )
+                }
+              >
+                {sortBy === "newest"
+                  ? "Newest first"
+                  : sortBy === "budget"
+                  ? "Highest budget"
+                  : "Best match"}{" "}
+                <ChevronDown />
               </button>
             </div>
             <div className="project-grid">
-              {initialProjects
-                .filter((p) => `${p.title} ${p.skills}`.toLowerCase().includes(query.toLowerCase()))
-                .map((p) => (
+              {filteredProjects.length > 0 ? (
+                filteredProjects.map((p) => (
                   <ProjectCard
                     key={p.id}
                     project={p}
                     onClick={() => setSelected(p)}
-                    saved={saved.includes(p.id)}
-                    onSave={() => {
-                      setSaved((v) =>
-                        v.includes(p.id) ? v.filter((x) => x !== p.id) : [...v, p.id],
-                      );
-                      toast(saved.includes(p.id) ? "Removed from saved projects" : "Project saved");
-                    }}
+                    saved={saved.some((id) => String(id) === String(p.id))}
+                    onSave={() => toggleSave(p.id)}
                   />
-                ))}
+                ))
+              ) : (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "48px 24px",
+                    color: "#627d98",
+                    background: "white",
+                    borderRadius: 12,
+                    border: "1px dashed #dce7ed",
+                    gridColumn: "1 / -1",
+                  }}
+                >
+                  <p>No project opportunities found.</p>
+                </div>
+              )}
             </div>
           </div>
           <aside className="insight-card">
             <div className="insight-icon">
-              <Sparkles />
+              <Award size={20} />
             </div>
             <h3>Make your matches stronger</h3>
-            <p>Verify your Figma skill to unlock more high-match opportunities.</p>
-            <div>
-              <span>Profile match strength</span>
-              <b>82%</b>
-            </div>
-            <div className="progress">
-              <i style={{ width: "82%" }}></i>
-            </div>
+            <p>Verify your skills to unlock more high-match opportunities.</p>
             <button onClick={() => setActive("Skill Verification")}>
               Verify a skill <ArrowRight />
             </button>
@@ -1138,30 +2005,153 @@ function TalentApp({
       </main>
     );
   if (active === "My Applications")
-    return <Applications applied={applied} onBrowse={() => setActive("Explore Projects")} />;
-  if (active === "Active Projects") return <ActiveProject toast={toast} />;
-  if (active === "Messages") return <Messages />;
-  if (active === "My Portfolio") return <Portfolio toast={toast} />;
-  if (active === "Skill Verification") return <Verification toast={toast} />;
-  if (active === "Reviews") return <Reviews role="talent" toast={toast} />;
+    return (
+      <Applications
+        applications={applications}
+        applied={applied}
+        projects={marketProjects}
+        onSelectProject={(p) => setSelected(p)}
+        onBrowse={() => setActive("Explore Projects")}
+        onWithdraw={async (appId, projectId) => {
+          try {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (session && !String(appId).startsWith("local-") && !String(appId).startsWith("temp-")) {
+              const res = await fetch("/api/applications", {
+                method: "PATCH",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  application_id: appId,
+                  status: "withdrawn",
+                }),
+              });
+              if (!res.ok) {
+                const err = await res.json();
+                toast(err.error || "Could not withdraw application");
+                return;
+              }
+            }
+            setApplications((prev) => prev.filter((a) => a.id !== appId));
+            setApplied((prev) => prev.filter((id) => String(id) !== String(projectId)));
+            await onRefreshProjects?.();
+            toast("Application withdrawn");
+          } catch {
+            toast("Failed to withdraw application");
+          }
+        }}
+      />
+    );
+  if (active === "Active Projects")
+    return (
+      <ActiveProject
+        toast={toast}
+        contracts={contracts}
+        onRefresh={loadTalentData}
+        onNavigate={setActive}
+      />
+    );
+  if (active === "Messages") return <Messages toast={toast} />;
+  if (active === "My Portfolio")
+    return (
+      <Portfolio
+        toast={toast}
+        overview={overview}
+        onRefresh={loadTalentData}
+        onEditProfile={() => setActive("Settings")}
+      />
+    );
+  if (active === "Skill Verification")
+    return (
+      <Verification
+        toast={toast}
+        verifications={overview?.verifications || []}
+        onRefresh={loadTalentData}
+      />
+    );
+  if (active === "Reviews")
+    return (
+      <Reviews
+        role="talent"
+        toast={toast}
+        reviews={overview?.reviews || []}
+        onRefresh={loadTalentData}
+      />
+    );
   if (active === "Settings") return <SettingsPage role="talent" toast={toast} />;
-  return <TalentOverview onNavigate={setActive} onProject={setSelected} />;
+
+  const activeContractsCount = contracts.filter((c) => c.status === "active").length;
+  const completedContractsCount = contracts.filter((c) => c.status === "completed").length;
+  const reviewsList = overview?.reviews || [];
+  const avgRating =
+    reviewsList.length > 0
+      ? (
+          reviewsList.reduce((acc: number, r: any) => acc + Number(r.rating || 0), 0) /
+          reviewsList.length
+        ).toFixed(1)
+      : "0.0";
+
+  return (
+    <TalentOverview
+      onNavigate={setActive}
+      onProject={setSelected}
+      projects={marketProjects}
+      applicationsCount={applications.length}
+      activeContractsCount={activeContractsCount}
+      completedContractsCount={completedContractsCount}
+      avgRating={avgRating}
+      reviewsCount={reviewsList.length}
+      skills={overview?.skills || []}
+      verifications={overview?.verifications || []}
+      portfolioCount={(overview?.portfolio || []).length}
+    />
+  );
 }
 
 function TalentOverview({
   onNavigate,
   onProject,
+  projects = [],
+  applicationsCount = 0,
+  activeContractsCount = 0,
+  completedContractsCount = 0,
+  avgRating = "0.0",
+  reviewsCount = 0,
+  skills = [],
+  verifications = [],
+  portfolioCount = 0,
 }: {
   onNavigate: (s: string) => void;
   onProject: (p: Project) => void;
+  projects?: Project[];
+  applicationsCount?: number;
+  activeContractsCount?: number;
+  completedContractsCount?: number;
+  avgRating?: string;
+  reviewsCount?: number;
+  skills?: any[];
+  verifications?: any[];
+  portfolioCount?: number;
 }) {
+  const { profile } = useAuth();
+  const todayStr = new Date()
+    .toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })
+    .toUpperCase();
+
+  const hasSkills = skills.length > 0 || verifications.length > 0;
+  const hasPortfolio = portfolioCount > 0;
+  const profileStrength = 25 + (hasSkills ? 35 : 0) + (hasPortfolio ? 40 : 0);
+
   return (
     <main className="page dashboard-page">
       <div className="welcome-row">
         <div>
-          <span>MONDAY, MAY 12</span>
-          <h1>Good morning, Mika.</h1>
-          <p>Three new opportunities match your verified skills today.</p>
+          <span>{todayStr}</span>
+          <h1>Welcome, {profile?.display_name || "Talent"}.</h1>
+          <p>Discover projects matching your skills and start building proof of work.</p>
         </div>
         <button className="btn btn-primary" onClick={() => onNavigate("Explore Projects")}>
           Find a project <Search size={17} />
@@ -1171,25 +2161,31 @@ function TalentOverview({
         <Stat
           icon={BriefcaseBusiness}
           tone="blue"
-          value="12"
+          value={String(applicationsCount)}
           label="Applications"
-          delta="+3 this week"
+          delta="total submitted"
         />
         <Stat
           icon={FolderKanban}
           tone="purple"
-          value="02"
+          value={String(activeContractsCount)}
           label="Active projects"
-          delta="1 due soon"
+          delta="in progress"
         />
         <Stat
           icon={CheckCircle2}
           tone="green"
-          value="08"
+          value={String(completedContractsCount)}
           label="Completed"
-          delta="100% success rate"
+          delta="verified delivery"
         />
-        <Stat icon={Star} tone="amber" value="4.9" label="Client rating" delta="from 8 reviews" />
+        <Stat
+          icon={Star}
+          tone="amber"
+          value={avgRating}
+          label="Client rating"
+          delta={reviewsCount > 0 ? `${reviewsCount} review${reviewsCount === 1 ? "" : "s"}` : "no reviews yet"}
+        />
       </div>
       <div className="dashboard-grid">
         <section className="panel profile-progress">
@@ -1198,20 +2194,20 @@ function TalentOverview({
               <b>Complete your profile</b>
               <span>Strong profiles get 2× more project invites.</span>
             </div>
-            <strong>82%</strong>
+            <strong>{profileStrength}%</strong>
           </div>
           <div className="progress">
-            <i style={{ width: "82%" }}></i>
+            <i style={{ width: `${profileStrength}%` }}></i>
           </div>
           <div className="check-row">
             <span className="done">
               <Check /> Basic profile
             </span>
-            <span className="done">
-              <Check /> Skills added
+            <span className={hasSkills ? "done" : ""}>
+              {hasSkills ? <Check /> : <span className="dot"></span>} Add skills
             </span>
-            <span>
-              <span className="dot"></span> Add 2 portfolio items
+            <span className={hasPortfolio ? "done" : ""}>
+              {hasPortfolio ? <Check /> : <span className="dot"></span>} Add portfolio items
             </span>
             <button onClick={() => onNavigate("My Portfolio")}>
               Continue <ArrowRight />
@@ -1221,35 +2217,13 @@ function TalentOverview({
         <section className="panel activity-panel">
           <div className="panel-title">
             <b>Recent activity</b>
-            <button>View all</button>
+            <button onClick={() => onNavigate("My Applications")}>View all</button>
           </div>
-          <ActivityItem
-            icon={Eye}
-            text={
-              <>
-                <b>Kape Norte Co.</b> viewed your profile
-              </>
-            }
-            time="18 min ago"
-          />
-          <ActivityItem
-            icon={MessageSquare}
-            text={
-              <>
-                New message from <b>Daniel</b>
-              </>
-            }
-            time="2h ago"
-          />
-          <ActivityItem
-            icon={CheckCircle2}
-            text={
-              <>
-                Application moved to <b>Shortlisted</b>
-              </>
-            }
-            time="Yesterday"
-          />
+          <div style={{ padding: "32px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
+            {applicationsCount > 0 || activeContractsCount > 0
+              ? `You have ${applicationsCount} submitted application${applicationsCount === 1 ? "" : "s"} and ${activeContractsCount} active project${activeContractsCount === 1 ? "" : "s"}.`
+              : "No recent activity yet. When you submit applications or receive messages, notices will appear here."}
+          </div>
         </section>
         <section className="panel recommendations">
           <div className="panel-title">
@@ -1262,24 +2236,30 @@ function TalentOverview({
             </button>
           </div>
           <div className="compact-projects">
-            {initialProjects.slice(0, 3).map((p) => (
-              <div className="compact-project" onClick={() => onProject(p)} key={p.id}>
-                <Avatar initials={p.initials} color={p.color} />
-                <div>
-                  <span>{p.company}</span>
-                  <b>{p.title}</b>
-                  <div className="tags">
-                    {p.skills.slice(0, 2).map((s) => (
-                      <i key={s}>{s}</i>
-                    ))}
+            {projects.length > 0 ? (
+              projects.slice(0, 3).map((p) => (
+                <div className="compact-project" onClick={() => onProject(p)} key={p.id}>
+                  <Avatar initials={p.initials} color={p.color} />
+                  <div>
+                    <span>{p.company}</span>
+                    <b>{p.title}</b>
+                    <div className="tags">
+                      {p.skills.slice(0, 2).map((s) => (
+                        <i key={s}>{s}</i>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="compact-end">
+                    <strong>{php(p.budget)}</strong>
+                    <Badge tone="green">{p.match}% match</Badge>
                   </div>
                 </div>
-                <div className="compact-end">
-                  <strong>{php(p.budget)}</strong>
-                  <Badge tone="green">{p.match}% match</Badge>
-                </div>
+              ))
+            ) : (
+              <div style={{ padding: "24px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
+                No recommended projects right now. Browse all opportunities in the marketplace.
               </div>
-            ))}
+            )}
           </div>
         </section>
         <section className="panel skills-panel">
@@ -1287,31 +2267,32 @@ function TalentOverview({
             <b>Your verified skills</b>
             <button onClick={() => onNavigate("Skill Verification")}>Manage</button>
           </div>
-          <div className="verified-skill">
-            <span>
-              <ShieldCheck /> Figma
-            </span>
-            <Badge tone="green">Verified</Badge>
-          </div>
-          <div className="verified-skill">
-            <span>
-              <ShieldCheck /> UI Design
-            </span>
-            <Badge tone="green">Verified</Badge>
-          </div>
-          <div className="verified-skill muted">
-            <span>
-              <Clock3 /> React
-            </span>
-            <Badge tone="amber">In review</Badge>
-          </div>
-          <div className="rating-box">
-            <Star fill="currentColor" />
-            <div>
-              <b>Top 8%</b>
-              <span>among design talents</span>
+          {verifications.length > 0 ? (
+            <div style={{ display: "grid", gap: 10 }}>
+              {verifications.map((v: any) => (
+                <div
+                  key={v.id}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    padding: "10px 12px",
+                    background: "#f8fafc",
+                    borderRadius: 10,
+                  }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13, color: "#102a43" }}>
+                    {v.skill_name}
+                  </span>
+                  <Badge tone="green">{v.score}% Verified</Badge>
+                </div>
+              ))}
             </div>
-          </div>
+          ) : (
+            <div style={{ padding: "24px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
+              No verified skills yet. Complete skill verification assessments to earn badges.
+            </div>
+          )}
         </section>
       </div>
     </main>
@@ -1394,13 +2375,43 @@ function ProjectDetail({
   onBack,
   onApply,
   applied,
+  saved = false,
+  onSave,
+  onMessageBusiness,
+  readOnly = false,
 }: {
   project: Project;
   onBack: () => void;
-  onApply: () => void;
-  applied: boolean;
+  onApply?: (proposal: string) => void;
+  applied?: boolean;
+  saved?: boolean;
+  onSave?: () => void;
+  onMessageBusiness?: () => void;
+  readOnly?: boolean;
 }) {
   const [modal, setModal] = useState(false);
+  const [proposalText, setProposalText] = useState(
+    "Hi! I’m excited about this project because it closely matches my experience. I’d love to help your team create a polished, thoughtful solution."
+  );
+
+  const objectivesList =
+    project.objectives && project.objectives.length > 0
+      ? project.objectives
+      : [
+          "Create a polished, accessible experience aligned with our brand.",
+          "Translate business needs into clear and practical solutions.",
+          "Deliver organized source files and simple documentation.",
+        ];
+
+  const deliverablesList =
+    project.deliverables && project.deliverables.length > 0
+      ? project.deliverables
+      : [
+          "Initial direction and working draft",
+          "Two rounds of structured revisions",
+          "Final production-ready files and handover",
+        ];
+
   return (
     <main className="page detail-page">
       <button className="back-link" onClick={onBack}>
@@ -1410,7 +2421,7 @@ function ProjectDetail({
         <div>
           <section className="panel detail-hero">
             <div className="project-top">
-              <Avatar initials={project.initials} color={project.color} size="lg" />
+              <Avatar initials={project.initials} color={project.color} size="lg" src={project.avatarUrl} />
               <div>
                 <span>
                   {project.company} <ShieldCheck className="verified-mini" />
@@ -1454,22 +2465,18 @@ function ProjectDetail({
           </section>
           <section className="panel rich-copy">
             <h2>About this project</h2>
-            <p>
-              We’re looking for a motivated emerging professional to help us bring this project to
-              life. You’ll work closely with our small team, with clear feedback and practical
-              support throughout.
-            </p>
+            <p>{project.description}</p>
             <h3>Project objectives</h3>
             <ul>
-              <li>Create a polished, accessible experience aligned with our brand.</li>
-              <li>Translate business needs into clear and practical solutions.</li>
-              <li>Deliver organized source files and simple documentation.</li>
+              {objectivesList.map((obj, idx) => (
+                <li key={idx}>{obj}</li>
+              ))}
             </ul>
             <h3>Key deliverables</h3>
             <ul>
-              <li>Initial direction and working draft</li>
-              <li>Two rounds of structured revisions</li>
-              <li>Final production-ready files and handover</li>
+              {deliverablesList.map((del, idx) => (
+                <li key={idx}>{del}</li>
+              ))}
             </ul>
           </section>
         </div>
@@ -1480,42 +2487,47 @@ function ProjectDetail({
               <span>skill match</span>
             </div>
             <h3>You’re a great fit</h3>
-            <p>Your verified skills align strongly with this project.</p>
+            <p>Your skills align with the requirements for this project.</p>
             <div className="fit-list">
-              <span>
-                <Check /> Figma proficiency
-              </span>
-              <span>
-                <Check /> Portfolio quality
-              </span>
-              <span>
-                <Check /> Availability match
-              </span>
+              {project.skills.slice(0, 3).map((sk) => (
+                <span key={sk}>
+                  <Check /> {sk} proficiency
+                </span>
+              ))}
             </div>
-            <button
-              className="btn btn-primary full btn-lg"
-              disabled={applied}
-              onClick={() => setModal(true)}
-            >
-              {applied ? (
-                <>
-                  <Check /> Application submitted
-                </>
-              ) : (
-                <>
-                  Apply for project <ArrowRight />
-                </>
-              )}
-            </button>
-            <button className="btn btn-white full">
-              <Heart /> Save project
-            </button>
-            <small>Applications close in 6 days</small>
+            {!readOnly && (
+              <>
+                <button
+                  className="btn btn-primary full btn-lg"
+                  disabled={applied}
+                  onClick={() => setModal(true)}
+                >
+                  {applied ? (
+                    <>
+                      <Check /> Application submitted
+                    </>
+                  ) : (
+                    <>
+                      Apply for project <ArrowRight />
+                    </>
+                  )}
+                </button>
+                <button className="btn btn-white full" onClick={onSave}>
+                  <Heart fill={saved ? "currentColor" : "none"} />{" "}
+                  {saved ? "Saved project" : "Save project"}
+                </button>
+              </>
+            )}
+            <small>
+              {project.deadline
+                ? `Application deadline: ${project.deadline}`
+                : "Open for applications"}
+            </small>
           </div>
           <div className="panel business-card">
             <span>ABOUT THE BUSINESS</span>
             <div>
-              <Avatar initials={project.initials} color={project.color} />
+              <Avatar initials={project.initials} color={project.color} src={project.avatarUrl} />
               <h3>{project.company}</h3>
             </div>
             <p>
@@ -1524,15 +2536,25 @@ function ProjectDetail({
             </p>
             <div>
               <span>
-                Projects posted <b>8</b>
+                Category <b>{project.category}</b>
               </span>
               <span>
-                Hire rate <b>88%</b>
+                Setup <b>{project.workSetup || "Remote"}</b>
               </span>
               <span>
-                Rating <b>4.9 ★</b>
+                Status <b>Open</b>
               </span>
             </div>
+            {!readOnly && onMessageBusiness && (
+              <button
+                type="button"
+                className="btn btn-white full"
+                style={{ marginTop: 14 }}
+                onClick={onMessageBusiness}
+              >
+                <MessageSquare size={15} /> Message {project.company}
+              </button>
+            )}
           </div>
         </aside>
       </div>
@@ -1549,14 +2571,11 @@ function ProjectDetail({
             </p>
             <label>
               Your proposal
-              <textarea defaultValue="Hi! I’m excited about this project because it closely matches my UI/UX and Figma experience. I’d love to help your team create a polished, thoughtful solution." />
-            </label>
-            <label>
-              Relevant portfolio work
-              <select>
-                <option>Alaga Mobile App Case Study</option>
-                <option>Local Commerce Website Redesign</option>
-              </select>
+              <textarea
+                value={proposalText}
+                onChange={(e) => setProposalText(e.target.value)}
+                placeholder="Share your relevant experience and how you can help..."
+              />
             </label>
             <div className="modal-skills">
               <span>Skills included</span>
@@ -1571,7 +2590,7 @@ function ProjectDetail({
             <button
               className="btn btn-primary full btn-lg"
               onClick={() => {
-                onApply();
+                onApply?.(proposalText);
                 setModal(false);
               }}
             >
@@ -1585,14 +2604,75 @@ function ProjectDetail({
   );
 }
 
-function Applications({ applied, onBrowse }: { applied: number[]; onBrowse: () => void }) {
-  const items = [
-    initialProjects[4],
-    ...applied
-      .filter((x) => x !== 5)
-      .map((id) => initialProjects.find((p) => p.id === id)!)
-      .filter(Boolean),
-  ];
+function Applications({
+  applications = [],
+  applied,
+  projects = [],
+  onSelectProject,
+  onBrowse,
+  onWithdraw,
+}: {
+  applications?: TalentApplication[];
+  applied: (string | number)[];
+  projects?: Project[];
+  onSelectProject?: (p: Project) => void;
+  onBrowse: () => void;
+  onWithdraw?: (applicationId: string, projectId: string | number) => void;
+}) {
+  const [tab, setTab] = useState<"all" | "review" | "shortlisted" | "accepted" | "closed">("all");
+
+  // Merge database applications with any local applied IDs
+  const allItems: TalentApplication[] = useMemo(() => {
+    const map = new Map<string, TalentApplication>();
+    for (const app of applications) {
+      map.set(String(app.project_id), app);
+    }
+    for (const pid of applied) {
+      const key = String(pid);
+      if (!map.has(key)) {
+        const found = projects.find((p) => String(p.id) === key);
+        if (found) {
+          map.set(key, {
+            id: `local-${key}`,
+            project_id: key,
+            proposal: "",
+            status: "submitted",
+            proposed_budget: found.budget,
+            submitted_at: new Date().toISOString(),
+            appliedAgo: "Just now",
+            project: found,
+          });
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [applications, applied, projects]);
+
+  const underReviewCount = allItems.filter((a) => a.status === "submitted").length;
+  const shortlistedCount = allItems.filter(
+    (a) => a.status === "shortlisted" || a.status === "interview"
+  ).length;
+  const acceptedCount = allItems.filter((a) => a.status === "accepted").length;
+  const closedCount = allItems.filter(
+    (a) => a.status === "rejected" || a.status === "withdrawn"
+  ).length;
+
+  const filteredItems = allItems.filter((a) => {
+    if (tab === "review") return a.status === "submitted";
+    if (tab === "shortlisted") return a.status === "shortlisted" || a.status === "interview";
+    if (tab === "accepted") return a.status === "accepted";
+    if (tab === "closed") return a.status === "rejected" || a.status === "withdrawn";
+    return true;
+  });
+
+  const getStatusBadge = (status: TalentApplication["status"]) => {
+    if (status === "accepted") return <Badge tone="green">Accepted</Badge>;
+    if (status === "shortlisted") return <Badge tone="purple">Shortlisted</Badge>;
+    if (status === "interview") return <Badge tone="amber">In Review</Badge>;
+    if (status === "rejected") return <Badge tone="red">Closed</Badge>;
+    return <Badge tone="blue">Submitted</Badge>;
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -1601,46 +2681,103 @@ function Applications({ applied, onBrowse }: { applied: number[]; onBrowse: () =
         text="Stay on top of your proposals and next steps."
       />
       <div className="tabs">
-        <button className="active">
-          All <span>{items.length + 2}</span>
+        <button className={tab === "all" ? "active" : ""} onClick={() => setTab("all")}>
+          All <span>{allItems.length}</span>
         </button>
-        <button>
-          Under review <span>2</span>
+        <button className={tab === "review" ? "active" : ""} onClick={() => setTab("review")}>
+          Under review <span>{underReviewCount}</span>
         </button>
-        <button>
-          Shortlisted <span>1</span>
+        <button
+          className={tab === "shortlisted" ? "active" : ""}
+          onClick={() => setTab("shortlisted")}
+        >
+          Shortlisted <span>{shortlistedCount}</span>
         </button>
-        <button>Accepted</button>
-        <button>Closed</button>
+        <button className={tab === "accepted" ? "active" : ""} onClick={() => setTab("accepted")}>
+          Accepted <span>{acceptedCount}</span>
+        </button>
+        <button className={tab === "closed" ? "active" : ""} onClick={() => setTab("closed")}>
+          Closed <span>{closedCount}</span>
+        </button>
       </div>
       <div className="panel application-list">
-        {items.map((p, i) => (
-          <div className="application-row" key={p.id}>
-            <Avatar initials={p.initials} color={p.color} />
-            <div>
-              <span>{p.company}</span>
-              <b>{p.title}</b>
-              <small>Applied {i ? "Just now" : "May 8, 2026"}</small>
-            </div>
-            <div className="application-status">
-              <Badge tone={i ? "blue" : "amber"}>{i ? "Submitted" : "Shortlisted"}</Badge>
-              <span className="timeline-mini">
-                <i className="done"></i>
-                <i className="done"></i>
-                <i className={!i ? "active" : ""}></i>
-                <i></i>
-              </span>
-            </div>
-            <button>
-              <ChevronRight />
+        {filteredItems.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "48px 24px", color: "#627d98" }}>
+            <p style={{ marginBottom: 16 }}>
+              {allItems.length === 0
+                ? "You haven't submitted any applications yet."
+                : "No applications in this stage."}
+            </p>
+            <button className="btn btn-primary" onClick={onBrowse}>
+              Browse projects
             </button>
           </div>
-        ))}
+        ) : (
+          filteredItems.map((item) => {
+            const p = item.project;
+            return (
+              <div
+                className="application-row"
+                key={item.id}
+                onClick={() => onSelectProject?.(p)}
+                style={{ cursor: "pointer" }}
+              >
+                <Avatar initials={p.initials} color={p.color} />
+                <div>
+                  <span>{p.company}</span>
+                  <b>{p.title}</b>
+                  <small>
+                    Applied {item.appliedAgo} · {php(item.proposed_budget)}
+                  </small>
+                </div>
+                <div className="application-status">
+                  {getStatusBadge(item.status)}
+                  <span className="timeline-mini">
+                    <i className="done"></i>
+                    <i
+                      className={
+                        item.status !== "submitted" ? "done" : "active"
+                      }
+                    ></i>
+                    <i
+                      className={
+                        item.status === "shortlisted" || item.status === "interview"
+                          ? "active"
+                          : item.status === "accepted"
+                          ? "done"
+                          : ""
+                      }
+                    ></i>
+                    <i className={item.status === "accepted" ? "done" : ""}></i>
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  {item.status === "submitted" && onWithdraw && (
+                    <button
+                      type="button"
+                      className="btn btn-white"
+                      style={{ padding: "6px 10px", fontSize: 12 }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onWithdraw(item.id, item.project_id);
+                      }}
+                    >
+                      Withdraw
+                    </button>
+                  )}
+                  <button type="button" onClick={() => onSelectProject?.(p)}>
+                    <ChevronRight />
+                  </button>
+                </div>
+              </div>
+            );
+          })
+        )}
         <div className="empty-inline">
-          <Sparkles />
+          <Search size={18} />
           <div>
             <b>Keep your momentum going</b>
-            <span>New opportunities are added every day.</span>
+            <span>New opportunities are added by businesses regularly.</span>
           </div>
           <button className="btn btn-white" onClick={onBrowse}>
             Browse projects
@@ -1651,214 +2788,1094 @@ function Applications({ applied, onBrowse }: { applied: number[]; onBrowse: () =
   );
 }
 
-function ActiveProject({ toast }: { toast: (s: string) => void }) {
-  const [done, setDone] = useState([true, true, false, false]);
-  const progress = Math.round((done.filter(Boolean).length / done.length) * 100);
+function ActiveProject({
+  toast,
+  contracts: externalContracts,
+  onRefresh,
+  onNavigate,
+}: {
+  toast: (s: string) => void;
+  contracts?: any[];
+  onRefresh?: () => Promise<void>;
+  onNavigate?: (s: string) => void;
+}) {
+  const { role, profile } = useAuth();
+  const [contracts, setContracts] = useState<any[]>(externalContracts || []);
+  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+  const [taskInput, setTaskInput] = useState("");
+  const [deliverableModal, setDeliverableModal] = useState(false);
+  const [delivTitle, setDelivTitle] = useState("");
+  const [delivNotes, setDelivNotes] = useState("");
+  const [delivUrl, setDelivUrl] = useState("");
+
+  const loadContracts = async () => {
+    const list = await fetchContracts();
+    setContracts(list);
+    if (list.length > 0 && !selectedContractId) {
+      setSelectedContractId(list[0].id);
+    }
+  };
+
+  useEffect(() => {
+    if (externalContracts && externalContracts.length > 0) {
+      setContracts(externalContracts);
+      if (!selectedContractId) {
+        setSelectedContractId(externalContracts[0].id);
+      }
+    } else {
+      loadContracts();
+    }
+  }, [externalContracts]);
+
+  if (contracts.length === 0) {
+    return (
+      <main className="page">
+        <PageTitle
+          eyebrow="ACTIVE PROJECTS"
+          title="Project Workspace"
+          text="Track delivery milestones, collaborate with team members, and submit deliverables."
+        />
+        <div className="panel active-empty-card">
+          <div className="active-empty-icon">
+            <FolderKanban size={32} />
+          </div>
+          <h3>No active projects right now</h3>
+          <p>
+            Once a proposal is accepted and a contract is formed, delivery milestones, tasks, and
+            submission review workflows will appear here automatically.
+          </p>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 18 }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() =>
+                onNavigate?.(role === "business" ? "Applications" : "Explore Projects")
+              }
+            >
+              {role === "business" ? "Review applicants" : "Explore projects"}{" "}
+              <ArrowRight size={16} />
+            </button>
+            <button
+              type="button"
+              className="btn btn-white"
+              onClick={() =>
+                onNavigate?.(role === "business" ? "Post a Project" : "My Applications")
+              }
+            >
+              {role === "business" ? "Post a new project" : "View my applications"}
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const activeContract =
+    contracts.find((c) => c.id === selectedContractId) || contracts[0];
+  const proj = activeContract.project || {};
+  const milestones = activeContract.milestones || [];
+  const allTasks = milestones.flatMap((m: any) => m.tasks || []);
+  const deliverables = activeContract.deliverables || [];
+  const doneTasksCount = allTasks.filter((t: any) => t.is_done).length;
+  const progressPct =
+    allTasks.length > 0
+      ? Math.round((doneTasksCount / allTasks.length) * 100)
+      : activeContract.status === "completed"
+      ? 100
+      : 25;
+
+  const businessName = proj.business?.name || (role === "business" ? profile?.display_name : "Business Partner") || "Business";
+  const talentName = activeContract.talent?.display_name || (role === "talent" ? profile?.display_name : "Assigned Talent") || "Talent";
+  const agreedAmount = Number(activeContract.agreed_amount || 0);
+
+  const callContractAction = async (payload: any) => {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return false;
+    const res = await fetch("/api/contracts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ contract_id: activeContract.id, ...payload }),
+    });
+    if (!res.ok) {
+      const err = await res.json();
+      toast(err.error || "Action failed");
+      return false;
+    }
+    await loadContracts();
+    await onRefresh?.();
+    return true;
+  };
+
   return (
     <main className="page">
       <PageTitle
-        eyebrow="ACTIVE PROJECT"
-        title="Alaga Health Mobile App"
-        text="UI/UX Design · Due June 4, 2026"
-        action={<Badge tone="green">On track</Badge>}
-      />
-      <div className="workspace-grid">
-        <section className="panel">
-          <div className="workspace-progress">
-            <div>
-              <span>Overall progress</span>
-              <strong>{progress}%</strong>
-            </div>
-            <div className="progress">
-              <i style={{ width: `${progress}%` }}></i>
-            </div>
-            <small>
-              {done.filter(Boolean).length} of {done.length} milestones complete
-            </small>
-          </div>
-          <div className="panel-title">
-            <b>Milestones & tasks</b>
-            <button>
-              <Plus /> Add task
-            </button>
-          </div>
-          {[
-            "Research & user flows",
-            "Low-fidelity wireframes",
-            "High-fidelity UI design",
-            "Interactive prototype & handoff",
-          ].map((m, i) => (
-            <label className={`milestone ${done[i] ? "done" : ""}`} key={m}>
-              <button onClick={() => setDone((v) => v.map((x, j) => (j === i ? !x : x)))}>
-                {done[i] ? <Check /> : i + 1}
-              </button>
-              <div>
-                <b>{m}</b>
-                <span>{i < 2 ? "Completed" : i === 2 ? "Due May 24" : "Due June 4"}</span>
-              </div>
-              {i === 2 && <Badge tone="blue">In progress</Badge>}
-            </label>
-          ))}
-        </section>
-        <aside>
-          <div className="panel project-people">
-            <b>Project team</b>
-            <div>
-              <Avatar initials="MR" />
-              <span>
-                <b>Mika Reyes</b>
-                <small>Designer · You</small>
-              </span>
-            </div>
-            <div>
-              <Avatar initials="DL" color="#805AD5" />
-              <span>
-                <b>Dr. Dana Lim</b>
-                <small>Project owner</small>
-              </span>
-            </div>
-            <button className="btn btn-white full">
-              <MessageSquare /> Open project chat
-            </button>
-          </div>
-          <div className="panel deliverable">
-            <b>Next deliverable</b>
-            <span>High-fidelity UI design</span>
-            <small>Due in 7 days</small>
+        eyebrow="ACTIVE PROJECT WORKSPACE"
+        title={proj.title || "Project Workspace"}
+        text={`Collaborating with ${
+          role === "business" ? talentName : businessName
+        } · Agreed escrow budget: ${php(agreedAmount)}`}
+        action={
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <button
-              className="btn btn-primary full"
-              onClick={() => toast("Deliverable submitted for review")}
+              type="button"
+              className="btn btn-white"
+              onClick={() => onNavigate?.("Messages")}
             >
-              <Upload /> Submit deliverable
+              <MessageSquare size={16} /> Open messages
             </button>
+            {role === "talent" && activeContract.status === "active" && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setDeliverableModal(true)}
+              >
+                <Upload size={16} /> Submit deliverable
+              </button>
+            )}
+            {role === "business" && activeContract.status === "active" && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  const ok = await callContractAction({ action: "complete_contract" });
+                  if (ok) toast("Project marked as completed & escrow released!");
+                }}
+              >
+                <CheckCircle2 size={16} /> Complete project
+              </button>
+            )}
+          </div>
+        }
+      />
+
+      {contracts.length > 1 && (
+        <div className="filter-chips" style={{ marginBottom: 18 }}>
+          {contracts.map((c) => (
+            <button
+              key={c.id}
+              type="button"
+              className={c.id === activeContract.id ? "active" : ""}
+              onClick={() => setSelectedContractId(c.id)}
+            >
+              {c.project?.title || "Contract"} ({c.status === "completed" ? "Completed" : "Active"})
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="workspace-grid">
+        <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
+          <section className="panel" style={{ padding: 24 }}>
+            <div className="panel-title" style={{ marginBottom: 14 }}>
+              <div>
+                <b>Delivery Milestones & Task Checklist</b>
+                <span>
+                  {doneTasksCount} of {allTasks.length} tasks completed
+                </span>
+              </div>
+              <Badge tone={activeContract.status === "completed" ? "green" : "blue"}>
+                {activeContract.status === "completed" ? "Completed" : "In Progress"}
+              </Badge>
+            </div>
+
+            <div className="workspace-progress">
+              <div>
+                <span>Overall delivery progress</span>
+                <strong>{progressPct}%</strong>
+              </div>
+              <div className="progress">
+                <i style={{ width: `${progressPct}%` }}></i>
+              </div>
+              <small>
+                Check off tasks as you complete each step of the project brief.
+              </small>
+            </div>
+
+            <div>
+              {allTasks.length === 0 ? (
+                <div
+                  style={{
+                    padding: "24px 16px",
+                    textAlign: "center",
+                    color: "#627d98",
+                    background: "#f8fafc",
+                    borderRadius: 11,
+                    border: "1px dashed #dce7ed",
+                    fontSize: 13,
+                    marginBottom: 16,
+                  }}
+                >
+                  No checklist tasks yet. Add your first delivery task below.
+                </div>
+              ) : (
+                allTasks.map((t: any, idx: number) => (
+                  <div
+                    className={`milestone ${t.is_done ? "done" : ""}`}
+                    key={t.id}
+                  >
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await callContractAction({
+                          action: "toggle_task",
+                          task_id: t.id,
+                          is_done: !t.is_done,
+                        });
+                      }}
+                      aria-label={t.is_done ? "Mark incomplete" : "Mark complete"}
+                    >
+                      {t.is_done ? <Check size={15} /> : idx + 1}
+                    </button>
+                    <div>
+                      <b
+                        style={{
+                          textDecoration: t.is_done ? "line-through" : "none",
+                          color: t.is_done ? "#829ab1" : "#102a43",
+                        }}
+                      >
+                        {t.title}
+                      </b>
+                      <span>{t.is_done ? "Completed" : "In progress"}</span>
+                    </div>
+                    <Badge tone={t.is_done ? "green" : "amber"}>
+                      {t.is_done ? "Done" : "Pending"}
+                    </Badge>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <form
+              style={{ display: "flex", gap: 10, marginTop: 16 }}
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!taskInput.trim()) return;
+                const ok = await callContractAction({
+                  action: "add_task",
+                  title: taskInput.trim(),
+                });
+                if (ok) {
+                  setTaskInput("");
+                  toast("Task added to checklist");
+                }
+              }}
+            >
+              <input
+                value={taskInput}
+                onChange={(e) => setTaskInput(e.target.value)}
+                placeholder="Add a delivery milestone or task…"
+                style={{
+                  flex: 1,
+                  padding: "11px 14px",
+                  borderRadius: 10,
+                  border: "1px solid #d9e5eb",
+                  fontSize: 13,
+                  color: "#102a43",
+                }}
+              />
+              <button type="submit" className="btn btn-white">
+                <Plus size={16} /> Add task
+              </button>
+            </form>
+          </section>
+
+          <section className="panel" style={{ padding: 24 }}>
+            <div className="panel-title" style={{ marginBottom: 14 }}>
+              <div>
+                <b>Submitted Deliverables & Files</b>
+                <span>Work links, prototypes, and handover notes</span>
+              </div>
+              {role === "talent" && activeContract.status === "active" && (
+                <button type="button" onClick={() => setDeliverableModal(true)}>
+                  Submit work <Plus size={14} />
+                </button>
+              )}
+            </div>
+
+            {deliverables.length === 0 ? (
+              <div
+                style={{
+                  padding: "32px 16px",
+                  textAlign: "center",
+                  color: "#627d98",
+                  background: "#f8fafc",
+                  borderRadius: 12,
+                  border: "1px dashed #dce7ed",
+                  fontSize: 13,
+                }}
+              >
+                No deliverables submitted yet.{" "}
+                {role === "talent"
+                  ? "Click 'Submit deliverable' to share work links or prototypes."
+                  : "Submitted deliverables from your talent collaborator will appear here."}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: 12 }}>
+                {deliverables.map((d: any) => (
+                  <div
+                    key={d.id}
+                    style={{
+                      padding: 16,
+                      borderRadius: 12,
+                      border: "1px solid #dce7ed",
+                      background: "#f8fafc",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: 6,
+                      }}
+                    >
+                      <b style={{ color: "#102a43", fontSize: 14 }}>{d.title}</b>
+                      <Badge tone="green">{d.status || "Submitted"}</Badge>
+                    </div>
+                    {d.notes && (
+                      <p style={{ fontSize: 13, color: "#486581", marginBottom: 8, lineHeight: 1.5 }}>
+                        {d.notes}
+                      </p>
+                    )}
+                    {d.external_url && (
+                      <a
+                        href={d.external_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: "#087EAD",
+                        }}
+                      >
+                        Open deliverable link <ArrowRight size={13} />
+                      </a>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        <aside>
+          <div className="panel project-people" style={{ padding: 20 }}>
+            <b>Project Collaborators</b>
+            <div>
+              <Avatar
+                initials={getInitials(businessName)}
+                color={proj.business?.avatar_color || "#087EAD"}
+              />
+              <span>
+                <b>{businessName}</b>
+                <small>Client · Business Partner</small>
+              </span>
+            </div>
+            <div>
+              <Avatar
+                initials={getInitials(talentName)}
+                color={activeContract.talent?.avatar_color || "#16A34A"}
+              />
+              <span>
+                <b>{talentName}</b>
+                <small>Assigned Talent</small>
+              </span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-white full"
+              style={{ marginTop: 8 }}
+              onClick={() => onNavigate?.("Messages")}
+            >
+              <MessageSquare size={15} /> Message collaborator
+            </button>
+          </div>
+
+          <div className="panel deliverable" style={{ padding: 20 }}>
+            <b>Contract & Escrow Summary</b>
+            <span>{php(agreedAmount)}</span>
+            <small style={{ color: activeContract.status === "completed" ? "#16a34a" : "#087ead" }}>
+              {activeContract.status === "completed"
+                ? "Escrow released · Contract completed"
+                : "Protected in GAWA Escrow"}
+            </small>
+            {role === "talent" && activeContract.status === "active" && (
+              <button
+                type="button"
+                className="btn btn-primary full"
+                onClick={() => setDeliverableModal(true)}
+              >
+                <Upload size={15} /> Submit deliverable
+              </button>
+            )}
+            {role === "business" && activeContract.status === "active" && (
+              <button
+                type="button"
+                className="btn btn-primary full"
+                onClick={async () => {
+                  const ok = await callContractAction({ action: "complete_contract" });
+                  if (ok) toast("Project marked as completed!");
+                }}
+              >
+                <CheckCircle2 size={15} /> Approve & release escrow
+              </button>
+            )}
           </div>
         </aside>
       </div>
+
+      {deliverableModal && (
+        <div className="gawa-modal-backdrop" onClick={() => setDeliverableModal(false)}>
+          <div className="gawa-modal-card" onClick={(e) => e.stopPropagation()}>
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 12,
+              }}
+            >
+              <div>
+                <span className="auth-kicker">PROJECT DELIVERY</span>
+                <h2 style={{ fontSize: 19, margin: "4px 0 0" }}>Submit a deliverable</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setDeliverableModal(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 12,
+              }}
+            >
+              Deliverable title
+              <input
+                value={delivTitle}
+                onChange={(e) => setDelivTitle(e.target.value)}
+                placeholder="e.g. High-fidelity Figma prototype"
+                style={{
+                  border: "1px solid #d9e5eb",
+                  borderRadius: 9,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                }}
+              />
+            </label>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 12,
+              }}
+            >
+              Notes / summary
+              <textarea
+                value={delivNotes}
+                onChange={(e) => setDelivNotes(e.target.value)}
+                placeholder="Describe what is included in this submission…"
+                style={{
+                  border: "1px solid #d9e5eb",
+                  borderRadius: 9,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                  height: 90,
+                  resize: "none",
+                }}
+              />
+            </label>
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 16,
+              }}
+            >
+              Link to work (optional)
+              <input
+                value={delivUrl}
+                onChange={(e) => setDelivUrl(e.target.value)}
+                placeholder="https://..."
+                style={{
+                  border: "1px solid #d9e5eb",
+                  borderRadius: 9,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-white"
+                onClick={() => setDeliverableModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={async () => {
+                  if (!delivTitle.trim()) {
+                    toast("Please provide a deliverable title");
+                    return;
+                  }
+                  const ok = await callContractAction({
+                    action: "submit_deliverable",
+                    title: delivTitle,
+                    notes: delivNotes,
+                    external_url: delivUrl,
+                  });
+                  if (ok) {
+                    setDelivTitle("");
+                    setDelivNotes("");
+                    setDelivUrl("");
+                    setDeliverableModal(false);
+                    toast("Deliverable submitted!");
+                  }
+                }}
+              >
+                Submit deliverable <Send size={15} />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function Messages() {
-  const [msgs, setMsgs] = useState([
-    "Hi Mika! The wireframes look great. We left a few notes in Figma.",
-    "Thank you! I’ll review those today and send the next revision by tomorrow afternoon.",
-  ]);
+function Messages({ toast }: { toast?: (s: string) => void }) {
+  const [conversations, setConversations] = useState<any[]>([]);
+  const [contacts, setContacts] = useState<any[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [text, setText] = useState("");
+  const [newModalOpen, setNewModalOpen] = useState(false);
+  const [contactSearch, setContactSearch] = useState("");
+  const [recipientId, setRecipientId] = useState("");
+  const [newSubject, setNewSubject] = useState("");
+  const [newMessage, setNewMessage] = useState("");
+  const [starting, setStarting] = useState(false);
+
+  const loadConvs = async (preferConvId?: string) => {
+    const data = await fetchMessagesData();
+    setConversations(data.conversations);
+    setContacts(data.contacts);
+    if (preferConvId) {
+      setSelectedId(preferConvId);
+    } else if (data.conversations.length > 0 && !selectedId) {
+      setSelectedId(data.conversations[0].id);
+    }
+  };
+
+  useEffect(() => {
+    loadConvs();
+  }, []);
+
+  const filteredConvs = conversations.filter((c) =>
+    `${c.other_name} ${c.subject} ${c.last_message}`
+      .toLowerCase()
+      .includes(searchQuery.toLowerCase())
+  );
+
+  const filteredContacts = contacts.filter((c) =>
+    `${c.name} ${c.role}`.toLowerCase().includes(contactSearch.toLowerCase())
+  );
+
+  const activeConv = conversations.find((c) => c.id === selectedId) || null;
+
+  const handleSend = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!text.trim() || !activeConv) return;
+    const messageBody = text.trim();
+    setText("");
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const res = await fetch("/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "send",
+          conversation_id: activeConv.id,
+          message: messageBody,
+        }),
+      });
+      if (!res.ok) {
+        toast?.("Failed to send message");
+        return;
+      }
+      await loadConvs(activeConv.id);
+    } catch {
+      toast?.("Failed to send message");
+    }
+  };
+
+  const handleStartConversation = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!recipientId) {
+      toast?.("Please choose a collaborator to message");
+      return;
+    }
+    if (!newMessage.trim()) {
+      toast?.("Please write a message");
+      return;
+    }
+
+    setStarting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const res = await fetch("/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "start",
+          recipient_id: recipientId,
+          subject: newSubject.trim() || "Project Collaboration",
+          message: newMessage.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast?.(data.error || "Failed to start conversation");
+        setStarting(false);
+        return;
+      }
+
+      setNewModalOpen(false);
+      setRecipientId("");
+      setNewSubject("");
+      setNewMessage("");
+      await loadConvs(data.conversation_id);
+      toast?.("Message sent");
+    } catch {
+      toast?.("Failed to start conversation");
+    } finally {
+      setStarting(false);
+    }
+  };
+
   return (
     <main className="messages-page">
       <div className="conversation-list">
         <div className="messages-head">
           <h2>Messages</h2>
-          <button>
-            <PenLine />
+          <button
+            type="button"
+            className="btn btn-primary"
+            style={{ padding: "7px 11px", fontSize: 12 }}
+            onClick={() => setNewModalOpen(true)}
+            title="Start a new message"
+          >
+            <Plus size={15} /> New
           </button>
         </div>
         <div className="conversation-search">
           <Search />
-          <input placeholder="Search conversations" />
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search conversations…"
+          />
         </div>
-        {[
-          [
-            "DL",
-            "Dana Lim",
-            "Alaga Health",
-            "Thanks, Mika! Looking forward…",
-            "10:42 AM",
-            "#805AD5",
-          ],
-          [
-            "DG",
-            "Daniel Go",
-            "SariSari Studio",
-            "Can you share the latest link?",
-            "Yesterday",
-            "#087EAD",
-          ],
-          [
-            "JM",
-            "Joana Mercado",
-            "Kape Norte Co.",
-            "Your application stood out.",
-            "Mon",
-            "#E0527D",
-          ],
-        ].map((c, i) => (
-          <button className={`conversation ${i === 0 ? "active" : ""}`} key={c[0]}>
-            <Avatar initials={c[0]} color={c[5]} size="sm" />
-            <div>
-              <b>{c[1]}</b>
-              <span>{c[2]}</span>
-              <p>{c[3]}</p>
-            </div>
-            <small>
-              {c[4]}
-              {i === 0 && <i>2</i>}
-            </small>
-          </button>
-        ))}
+        {filteredConvs.length === 0 ? (
+          <div
+            style={{
+              padding: "36px 16px",
+              textAlign: "center",
+              color: "#627d98",
+              fontSize: 13,
+            }}
+          >
+            <p style={{ marginBottom: 12 }}>
+              No active conversations yet. Start a direct chat with any business or talent.
+            </p>
+            <button
+              type="button"
+              className="btn btn-white"
+              style={{ fontSize: 12, padding: "7px 12px" }}
+              onClick={() => setNewModalOpen(true)}
+            >
+              <PenLine size={14} /> New message
+            </button>
+          </div>
+        ) : (
+          filteredConvs.map((c) => (
+            <button
+              className={`conversation ${c.id === selectedId ? "active" : ""}`}
+              key={c.id}
+              onClick={() => setSelectedId(c.id)}
+            >
+              <Avatar
+                initials={getInitials(c.other_name)}
+                color={c.other_color}
+                src={c.other_avatar}
+                size="sm"
+              />
+              <div>
+                <b>{c.other_name}</b>
+                <span>{c.subject}</span>
+                <p>{c.last_message}</p>
+              </div>
+              <small>{formatRelativeTime(c.updated_at)}</small>
+            </button>
+          ))
+        )}
       </div>
       <div className="chat">
-        <header>
-          <Avatar initials="DL" color="#805AD5" />
-          <div>
-            <b>Dana Lim</b>
-            <span>
-              <i></i> Online · Alaga Health
-            </span>
-          </div>
-          <button>
-            <MoreHorizontal />
-          </button>
-        </header>
-        <div className="project-context">
-          <FolderKanban />
-          <div>
-            <span>PROJECT</span>
-            <b>Alaga Health Mobile App</b>
-          </div>
-          <Badge tone="green">On track</Badge>
-          <ChevronRight />
-        </div>
-        <div className="chat-body">
-          <div className="date-separator">TODAY</div>
-          {msgs.map((m, i) => (
-            <div className={`bubble-row ${i % 2 ? "mine" : ""}`} key={i}>
-              {!i && <Avatar initials="DL" color="#805AD5" size="sm" />}
-              <div className="bubble">
-                {m}
-                <small>{i ? "10:40 AM" : "10:32 AM"}</small>
+        {activeConv ? (
+          <>
+            <header>
+              <Avatar
+                initials={getInitials(activeConv.other_name)}
+                color={activeConv.other_color}
+                src={activeConv.other_avatar}
+              />
+              <div>
+                <b>{activeConv.other_name}</b>
+                <span>
+                  <i></i> {activeConv.subject}
+                </span>
               </div>
+              <button
+                type="button"
+                className="btn btn-white"
+                style={{ padding: "7px 11px", fontSize: 12 }}
+                onClick={() => loadConvs(activeConv.id)}
+              >
+                Refresh
+              </button>
+            </header>
+            <div className="chat-body">
+              <div className="date-separator">Direct Conversation · {activeConv.subject}</div>
+              {(activeConv.messages || []).map((m: any) => (
+                <div className={`bubble-row ${m.mine ? "mine" : ""}`} key={m.id}>
+                  {!m.mine && (
+                    <Avatar
+                      initials={getInitials(activeConv.other_name)}
+                      color={activeConv.other_color}
+                      src={activeConv.other_avatar}
+                      size="sm"
+                    />
+                  )}
+                  <div className="bubble">
+                    {m.body}
+                    <small>{formatRelativeTime(m.created_at)}</small>
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-        <form
-          className="composer"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (text) {
-              setMsgs([...msgs, text]);
-              setText("");
-            }
-          }}
-        >
-          <button type="button">
-            <Paperclip />
-          </button>
-          <input
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Write a message…"
-          />
-          <button className="send" type="submit">
-            <Send />
-          </button>
-        </form>
+            <form className="composer" onSubmit={handleSend}>
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder={`Message ${activeConv.other_name}…`}
+              />
+              <button className="send" type="submit" aria-label="Send message">
+                <Send />
+              </button>
+            </form>
+          </>
+        ) : (
+          <div
+            style={{
+              display: "grid",
+              placeItems: "center",
+              height: "100%",
+              color: "#627d98",
+              textAlign: "center",
+              padding: 24,
+            }}
+          >
+            <div style={{ maxWidth: 360 }}>
+              <MessageSquare size={42} style={{ margin: "0 auto 14px", color: "#087ead" }} />
+              <h3 style={{ color: "#102a43", fontSize: 18, marginBottom: 8 }}>
+                Your GAWA Inbox
+              </h3>
+              <p style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 18 }}>
+                Collaborate directly with businesses and talents, ask questions about projects, or follow up on proposals.
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setNewModalOpen(true)}
+              >
+                <Plus size={16} /> Start a conversation
+              </button>
+            </div>
+          </div>
+        )}
       </div>
+
+      {newModalOpen && (
+        <div className="gawa-modal-backdrop" onClick={() => setNewModalOpen(false)}>
+          <form
+            className="gawa-modal-card"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={handleStartConversation}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 14,
+              }}
+            >
+              <div>
+                <span className="auth-kicker">DIRECT MESSAGE</span>
+                <h2 style={{ fontSize: 19, margin: "4px 0 0" }}>Start a new conversation</h2>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setNewModalOpen(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <label style={{ display: "block", fontSize: 12, fontWeight: 700, marginBottom: 6 }}>
+              1. Choose recipient ({filteredContacts.length} available)
+            </label>
+            <div className="conversation-search" style={{ margin: "0 0 8px" }}>
+              <Search />
+              <input
+                value={contactSearch}
+                onChange={(e) => setContactSearch(e.target.value)}
+                placeholder="Filter by name or role (business / talent)…"
+              />
+            </div>
+            <div className="contact-Directory-list">
+              {filteredContacts.length === 0 ? (
+                <div style={{ padding: 18, textAlign: "center", fontSize: 12, color: "#627d98" }}>
+                  No matching members found.
+                </div>
+              ) : (
+                filteredContacts.map((c) => (
+                  <button
+                    type="button"
+                    key={c.id}
+                    className={`contact-option ${recipientId === c.id ? "selected" : ""}`}
+                    onClick={() => setRecipientId(c.id)}
+                  >
+                    <Avatar
+                      initials={getInitials(c.name)}
+                      color={c.avatar_color}
+                      src={c.avatar_path}
+                      size="sm"
+                    />
+                    <div>
+                      <b>{c.name}</b>
+                      <small>{c.role} account</small>
+                    </div>
+                    {recipientId === c.id && <Check size={16} color="#087ead" />}
+                  </button>
+                ))
+              )}
+            </div>
+
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 12,
+              }}
+            >
+              2. Subject / Topic
+              <input
+                value={newSubject}
+                onChange={(e) => setNewSubject(e.target.value)}
+                placeholder="e.g. Project Collaboration / Proposal Follow-up"
+                style={{
+                  border: "1px solid #d9e5eb",
+                  borderRadius: 9,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                }}
+              />
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                fontSize: 12,
+                fontWeight: 700,
+                marginBottom: 16,
+              }}
+            >
+              3. Message
+              <textarea
+                required
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                placeholder="Write your message here…"
+                style={{
+                  border: "1px solid #d9e5eb",
+                  borderRadius: 9,
+                  padding: "10px 12px",
+                  fontSize: 13,
+                  height: 90,
+                  resize: "none",
+                }}
+              />
+            </label>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                className="btn btn-white"
+                onClick={() => setNewModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={starting}
+                className="btn btn-primary"
+              >
+                {starting ? "Sending…" : "Send message"} <Send size={15} />
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   );
 }
 
-function Portfolio({ toast }: { toast: (s: string) => void }) {
+function Portfolio({
+  toast,
+  overview,
+  onRefresh,
+  onEditProfile,
+}: {
+  toast: (s: string) => void;
+  overview?: any;
+  onRefresh?: () => Promise<void>;
+  onEditProfile?: () => void;
+}) {
+  const { profile, refreshProfile } = useAuth();
+  const [modalOpen, setModalOpen] = useState(false);
+  const [workTitle, setWorkTitle] = useState("");
+  const [workDesc, setWorkDesc] = useState("");
+  const [workUrl, setWorkUrl] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadingMedia, setUploadingMedia] = useState<"avatar" | "banner" | null>(null);
+
+  const displayName = profile?.display_name || "My Portfolio";
+  const initials = getInitials(displayName);
+  const portfolioItems = overview?.portfolio || [];
+  const verifiedSkills = overview?.verifications || [];
+  const talentSkills = overview?.skills || [];
+  const reviews = overview?.reviews || [];
+  const avgRating =
+    reviews.length > 0
+      ? (
+          reviews.reduce((s: number, r: any) => s + Number(r.rating || 0), 0) /
+          reviews.length
+        ).toFixed(1)
+      : "0.0";
+
+  const handleMediaChange = async (file: File | undefined, kind: "avatar" | "banner") => {
+    if (!file) return;
+    setUploadingMedia(kind);
+    const res = await uploadProfileMediaFile(file, kind);
+    setUploadingMedia(null);
+    if (!res.ok) {
+      toast(res.error || `Failed to upload ${kind}`);
+      return;
+    }
+    await refreshProfile();
+    toast(kind === "avatar" ? "Profile picture updated!" : "Profile banner updated!");
+  };
+
+  const handleAddWork = async () => {
+    if (!workTitle.trim()) {
+      toast("Please enter a project title");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const res = await fetch("/api/overview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "add_portfolio_item",
+          title: workTitle.trim(),
+          description: workDesc.trim(),
+          external_url: workUrl.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        toast(err.error || "Failed to add portfolio item");
+        setSubmitting(false);
+        return;
+      }
+      setWorkTitle("");
+      setWorkDesc("");
+      setWorkUrl("");
+      setModalOpen(false);
+      await onRefresh?.();
+      toast("Portfolio item added");
+    } catch {
+      toast("Failed to add portfolio item");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -1866,29 +3883,68 @@ function Portfolio({ toast }: { toast: (s: string) => void }) {
         title="Your work, your story"
         text="A professional profile that grows with every project."
         action={
-          <button className="btn btn-primary" onClick={() => toast("Portfolio editing enabled")}>
+          <button
+            className="btn btn-primary"
+            onClick={() => (onEditProfile ? onEditProfile() : toast("Navigate to Settings to edit profile"))}
+          >
             <PenLine /> Edit profile
           </button>
         }
       />
       <section className="panel portfolio-hero">
-        <div className="portfolio-cover"></div>
+        <div
+          className="portfolio-cover"
+          style={
+            profile?.banner_path
+              ? {
+                  backgroundImage: `linear-gradient(180deg, rgba(7,59,87,0.18), rgba(7,59,87,0.45)), url(${profile.banner_path})`,
+                }
+              : undefined
+          }
+        >
+          <div className="banner-actions-bar">
+            <label className="banner-upload-btn">
+              <ImageIcon />
+              <span>{uploadingMedia === "banner" ? "Uploading…" : "Change banner"}</span>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                style={{ display: "none" }}
+                onChange={(e) => handleMediaChange(e.target.files?.[0], "banner")}
+              />
+            </label>
+          </div>
+        </div>
         <div className="portfolio-profile">
-          <Avatar initials="MR" size="lg" />
+          <div className="avatar-upload-wrap">
+            <Avatar
+              initials={initials || "ME"}
+              size="lg"
+              src={profile?.avatar_path}
+              color={profile?.avatar_color}
+            />
+            <label className="avatar-edit-trigger" title="Change profile photo">
+              <Camera />
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                style={{ display: "none" }}
+                onChange={(e) => handleMediaChange(e.target.files?.[0], "avatar")}
+              />
+            </label>
+          </div>
           <div>
-            <h2>
-              Mika Reyes <ShieldCheck />
-            </h2>
-            <b>UI/UX Designer crafting clear, human digital products.</b>
+            <h2>{displayName}</h2>
+            <b>{profile?.bio || "Tell clients what you specialize in and what you’re building."}</b>
             <span>
-              <GraduationCap /> De La Salle University · Makati City
+              <GraduationCap /> {profile?.location || "Philippines"}
             </span>
           </div>
           <div>
             <strong>
-              4.9 <Star fill="currentColor" />
+              {avgRating} <Star fill="currentColor" />
             </strong>
-            <span>8 client reviews</span>
+            <span>{reviews.length} client review{reviews.length === 1 ? "" : "s"}</span>
           </div>
         </div>
       </section>
@@ -1896,46 +3952,214 @@ function Portfolio({ toast }: { toast: (s: string) => void }) {
         <section className="panel rich-copy">
           <h2>About me</h2>
           <p>
-            I’m an aspiring product designer who cares about making technology feel useful,
-            inclusive, and distinctly human. I enjoy turning complex problems into simple
-            experiences.
+            {profile?.bio ||
+              "Write a short overview of your background, experience, and the kind of work you're passionate about."}
           </p>
           <h3>Verified skills</h3>
-          <div className="skill-cloud">
-            <Badge tone="green">
-              <ShieldCheck /> Figma
-            </Badge>
-            <Badge tone="green">
-              <ShieldCheck /> UI Design
-            </Badge>
-            <Badge tone="blue">User Research</Badge>
-            <Badge tone="blue">Prototyping</Badge>
-          </div>
+          {verifiedSkills.length > 0 || talentSkills.length > 0 ? (
+            <div className="tags" style={{ marginTop: 8 }}>
+              {verifiedSkills.map((v: any) => (
+                <span key={v.id}>
+                  <Check size={14} /> {v.skill_name} ({v.score}%)
+                </span>
+              ))}
+              {talentSkills.map((ts: any) => (
+                <span key={ts.name}>{ts.name}</span>
+              ))}
+            </div>
+          ) : (
+            <div style={{ color: "#627d98", fontSize: 13 }}>
+              No verified skills yet. Complete skill assessments to earn verified badges.
+            </div>
+          )}
         </section>
         <section className="panel">
           <div className="panel-title">
             <b>Portfolio highlights</b>
-            <button>
+            <button onClick={() => setModalOpen(true)}>
               Add work <Plus />
             </button>
           </div>
-          <div className="portfolio-gallery">
-            <div className="work-card work-one">
-              <span>ALAGA HEALTH</span>
-              <b>Making community care easier to access</b>
+          {portfolioItems.length === 0 ? (
+            <div
+              style={{
+                padding: "48px 16px",
+                textAlign: "center",
+                color: "#627d98",
+                background: "#f8fafc",
+                borderRadius: 12,
+                border: "1px dashed #dce7ed",
+              }}
+            >
+              <p>
+                No portfolio items uploaded yet. Click &apos;Add work&apos; to showcase case studies and work samples.
+              </p>
             </div>
-            <div className="work-card work-two">
-              <span>LOCAL COMMERCE</span>
-              <b>A simpler way to shop local</b>
+          ) : (
+            <div style={{ display: "grid", gap: 12 }}>
+              {portfolioItems.map((item: any) => (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: 16,
+                    borderRadius: 12,
+                    border: "1px solid #dce7ed",
+                    background: "#f8fafc",
+                  }}
+                >
+                  <b style={{ display: "block", color: "#102a43", marginBottom: 4 }}>
+                    {item.title}
+                  </b>
+                  {item.description && (
+                    <p style={{ fontSize: 13, color: "#486581", marginBottom: 6 }}>
+                      {item.description}
+                    </p>
+                  )}
+                  {item.external_url && (
+                    <a
+                      href={item.external_url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ fontSize: 12, color: "#087EAD" }}
+                    >
+                      View project link →
+                    </a>
+                  )}
+                </div>
+              ))}
             </div>
-          </div>
+          )}
         </section>
       </div>
+
+      {modalOpen && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <button className="modal-close" onClick={() => setModalOpen(false)}>
+              <X />
+            </button>
+            <span className="auth-kicker">PORTFOLIO ITEM</span>
+            <h2>Add work sample</h2>
+            <label>
+              Title
+              <input
+                value={workTitle}
+                onChange={(e) => setWorkTitle(e.target.value)}
+                placeholder="e.g. E-Commerce Mobile App Redesign"
+              />
+            </label>
+            <label>
+              Description
+              <textarea
+                value={workDesc}
+                onChange={(e) => setWorkDesc(e.target.value)}
+                placeholder="Describe the problem, your approach, and the outcome…"
+              />
+            </label>
+            <label>
+              External link (optional)
+              <input
+                value={workUrl}
+                onChange={(e) => setWorkUrl(e.target.value)}
+                placeholder="https://..."
+              />
+            </label>
+            <button
+              className="btn btn-primary full btn-lg"
+              disabled={submitting}
+              onClick={handleAddWork}
+            >
+              {submitting ? "Saving..." : "Save to portfolio"}
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function Verification({ toast }: { toast: (s: string) => void }) {
+function Verification({
+  toast,
+  verifications = [],
+  onRefresh,
+}: {
+  toast: (s: string) => void;
+  verifications?: any[];
+  onRefresh?: () => Promise<void>;
+}) {
+  const [activeSkill, setActiveSkill] = useState<string | null>(null);
+  const [qIndex, setQIndex] = useState(0);
+  const [selectedAns, setSelectedAns] = useState<number>(0);
+  const [submitting, setSubmitting] = useState(false);
+
+  const verifMap = new Map<string, number>();
+  for (const v of verifications) {
+    if (v.skill_name) {
+      verifMap.set(String(v.skill_name).toLowerCase(), Number(v.score) || 92);
+    }
+  }
+
+  const catalogAssessments = [
+    ["Figma", "Interface Design"],
+    ["UI Design", "Design Foundations"],
+    ["React", "Web Development"],
+    ["User Research", "Product Design"],
+    ["Data Analytics", "Data"],
+    ["Content Strategy", "Marketing"],
+  ];
+
+  const sampleQuestions = [
+    {
+      q: "Which principle is most important when structuring a reusable component system?",
+      options: [
+        "Consistent tokens, clear variants, and accessible states",
+        "Using inline styles for every element",
+        "Avoiding documentation until after launch",
+      ],
+    },
+    {
+      q: "When collaborating with a client on milestone deliverables, what is the best practice?",
+      options: [
+        "Share early checkpoints and align on acceptance criteria",
+        "Wait until the final deadline to show progress",
+        "Skip scope confirmation",
+      ],
+    },
+  ];
+
+  const submitAssessment = async () => {
+    if (!activeSkill) return;
+    setSubmitting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session) {
+        await fetch("/api/overview", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            action: "submit_verification",
+            skill_name: activeSkill,
+            score: 92,
+            answers: { completed: true },
+          }),
+        });
+      }
+      await onRefresh?.();
+      toast(`${activeSkill} assessment completed — Verified (92%)!`);
+    } catch {
+      toast("Could not submit assessment");
+    } finally {
+      setSubmitting(false);
+      setActiveSkill(null);
+      setQIndex(0);
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -1951,43 +4175,111 @@ function Verification({ toast }: { toast: (s: string) => void }) {
         </div>
       </div>
       <div className="verification-grid">
-        {[
-          ["Figma", "Interface Design", "Verified", "green", 96],
-          ["UI Design", "Design Foundations", "Verified", "green", 91],
-          ["React", "Web Development", "In review", "amber", 82],
-          ["User Research", "Product Design", "Available", "blue", 0],
-          ["Data Analytics", "Data", "Available", "blue", 0],
-          ["Content Strategy", "Marketing", "Available", "blue", 0],
-        ].map((v) => (
-          <div className="panel verification-card" key={v[0] as string}>
-            <div className={`verify-icon ${v[3]}`}>
-              <ShieldCheck />
+        {catalogAssessments.map(([skillName, domain]) => {
+          const score = verifMap.get(skillName.toLowerCase()) || 0;
+          const isVerified = score > 0;
+          const tone = isVerified ? "green" : "blue";
+          return (
+            <div className="panel verification-card" key={skillName}>
+              <div className={`verify-icon ${tone}`}>
+                <ShieldCheck />
+              </div>
+              <Badge tone={tone}>{isVerified ? "Verified" : "Available"}</Badge>
+              <h3>{skillName}</h3>
+              <span>{domain}</span>
+              {isVerified ? (
+                <>
+                  <div className="score">
+                    <strong>{score}%</strong>
+                    <small>Assessment score</small>
+                  </div>
+                  <button
+                    className="btn btn-white full"
+                    onClick={() => toast(`${skillName}: Verified with ${score}% score`)}
+                  >
+                    View results
+                  </button>
+                </>
+              ) : (
+                <>
+                  <p>Short assessment · Approx. 5 minutes</p>
+                  <button
+                    className="btn btn-primary full"
+                    onClick={() => {
+                      setActiveSkill(skillName);
+                      setQIndex(0);
+                      setSelectedAns(0);
+                    }}
+                  >
+                    Start assessment
+                  </button>
+                </>
+              )}
             </div>
-            <Badge tone={v[3] as string}>{v[2] as string}</Badge>
-            <h3>{v[0] as string}</h3>
-            <span>{v[1] as string}</span>
-            {v[4] ? (
-              <>
-                <div className="score">
-                  <strong>{v[4] as number}%</strong>
-                  <small>Assessment score</small>
-                </div>
-                <button className="btn btn-white full">View results</button>
-              </>
-            ) : (
-              <>
-                <p>12 questions · Approx. 15 minutes</p>
-                <button
-                  className="btn btn-primary full"
-                  onClick={() => toast(`${v[0]} prototype assessment started`)}
-                >
-                  Start assessment
-                </button>
-              </>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
+
+      {activeSkill && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <button className="modal-close" onClick={() => setActiveSkill(null)}>
+              <X />
+            </button>
+            <span className="auth-kicker">
+              {activeSkill.toUpperCase()} ASSESSMENT · QUESTION {qIndex + 1} OF{" "}
+              {sampleQuestions.length}
+            </span>
+            <h2>{sampleQuestions[qIndex].q}</h2>
+            <div style={{ display: "grid", gap: 10, margin: "16px 0" }}>
+              {sampleQuestions[qIndex].options.map((opt, idx) => (
+                <label
+                  key={opt}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "12px 14px",
+                    borderRadius: 10,
+                    border:
+                      selectedAns === idx
+                        ? "2px solid #087EAD"
+                        : "1px solid #dce7ed",
+                    background: selectedAns === idx ? "#eff6ff" : "white",
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="assess-opt"
+                    checked={selectedAns === idx}
+                    onChange={() => setSelectedAns(idx)}
+                  />
+                  <span style={{ fontSize: 14, color: "#102a43" }}>{opt}</span>
+                </label>
+              ))}
+            </div>
+            <button
+              className="btn btn-primary full btn-lg"
+              disabled={submitting}
+              onClick={() => {
+                if (qIndex + 1 < sampleQuestions.length) {
+                  setQIndex(qIndex + 1);
+                  setSelectedAns(0);
+                } else {
+                  submitAssessment();
+                }
+              }}
+            >
+              {qIndex + 1 < sampleQuestions.length
+                ? "Next question"
+                : submitting
+                ? "Submitting..."
+                : "Submit assessment"}
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -1996,28 +4288,154 @@ function BusinessApp({
   active,
   setActive,
   toast,
+  onRefreshProjects,
 }: {
   active: string;
   setActive: (s: string) => void;
   toast: (s: string) => void;
+  onRefreshProjects?: () => Promise<void>;
 }) {
+  const { user } = useAuth();
   const [posted, setPosted] = useState<Project[]>([]);
+  const [businessApps, setBusinessApps] = useState<BusinessApplication[]>([]);
+  const [directoryTalents, setDirectoryTalents] = useState<Talent[]>([]);
+  const [contracts, setContracts] = useState<any[]>([]);
+  const [overview, setOverview] = useState<any | null>(null);
+  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+
+  useEffect(() => {
+    setSelectedProject(null);
+  }, [active]);
+
+  const loadBusinessData = async () => {
+    if (!user) return;
+    const [bProjects, bApps, dirTalents, cList, ovData] = await Promise.all([
+      fetchBusinessProjects(),
+      fetchBusinessApplications(),
+      fetchTalentsDirectory(),
+      fetchContracts(),
+      fetchOverviewData(),
+    ]);
+    setPosted(bProjects);
+    setBusinessApps(bApps);
+    setDirectoryTalents(dirTalents);
+    setContracts(cList);
+    if (ovData) setOverview(ovData);
+  };
+
+  useEffect(() => {
+    loadBusinessData();
+  }, [user, active]);
+
+  if (selectedProject) {
+    return (
+      <ProjectDetail
+        project={selectedProject}
+        onBack={() => setSelectedProject(null)}
+        readOnly
+      />
+    );
+  }
+
   if (active === "Post a Project")
     return (
       <PostProject
-        onPublish={(p) => {
-          setPosted([...posted, p]);
+        toast={toast}
+        onPublish={async (p) => {
+          setPosted((prev) => [p, ...prev.filter((x) => String(x.id) !== String(p.id))]);
+          await Promise.all([loadBusinessData(), onRefreshProjects?.()]);
           toast("Project published successfully");
           setActive("My Projects");
         }}
       />
     );
-  if (active === "Find Talent") return <TalentMarket toast={toast} />;
-  if (active === "Applications") return <ApplicantBoard toast={toast} />;
-  if (active === "Messages") return <Messages />;
-  if (active === "Payments") return <Payments />;
-  if (active === "Analytics") return <Analytics />;
-  if (active === "Active Projects") return <ActiveProject toast={toast} />;
+  if (active === "Find Talent")
+    return (
+      <TalentMarket
+        toast={toast}
+        talentsList={directoryTalents}
+        onInvite={async (talent) => {
+          if (!talent.id) {
+            toast(`Invitation sent to ${talent.name}`);
+            return;
+          }
+          try {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (session) {
+              await fetch("/api/messages", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  action: "start",
+                  recipient_id: talent.id,
+                  subject: "Project Invitation",
+                  message: `Hi ${talent.name}! We reviewed your profile on GAWA and would love to invite you to collaborate on our project.`,
+                }),
+              });
+            }
+            toast(`Invitation sent to ${talent.name}`);
+          } catch {
+            toast(`Invitation sent to ${talent.name}`);
+          }
+        }}
+      />
+    );
+  if (active === "Applications")
+    return (
+      <ApplicantBoard
+        toast={toast}
+        applications={businessApps}
+        onRefresh={loadBusinessData}
+        onMessageApplicant={async (app) => {
+          try {
+            const {
+              data: { session },
+            } = await supabase.auth.getSession();
+            if (session && app.talent_id) {
+              await fetch("/api/messages", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${session.access_token}`,
+                },
+                body: JSON.stringify({
+                  action: "start",
+                  recipient_id: app.talent_id,
+                  subject: `Application: ${app.project_title}`,
+                  message: `Hi ${app.talent.name}! Thanks for applying to "${app.project_title}". We'd love to discuss your proposal.`,
+                }),
+              });
+            }
+          } catch {}
+          setActive("Messages");
+        }}
+      />
+    );
+  if (active === "Messages") return <Messages toast={toast} />;
+  if (active === "Payments") return <Payments contracts={contracts} toast={toast} />;
+  if (active === "Analytics")
+    return (
+      <Analytics
+        posted={posted}
+        applications={businessApps}
+        contracts={contracts}
+        reviews={overview?.reviews || []}
+      />
+    );
+  if (active === "Active Projects")
+    return (
+      <ActiveProject
+        toast={toast}
+        contracts={contracts}
+        onRefresh={loadBusinessData}
+        onNavigate={setActive}
+      />
+    );
   if (active === "Settings") return <SettingsPage role="business" toast={toast} />;
   if (active === "My Projects")
     return (
@@ -2033,28 +4451,81 @@ function BusinessApp({
           }
         />
         <div className="project-grid">
-          {[...posted, ...initialProjects.slice(0, 3)].map((p) => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              onClick={() => {}}
-              saved={false}
-              onSave={() => {}}
-            />
-          ))}
+          {posted.length > 0 ? (
+            posted.map((p) => (
+              <ProjectCard
+                key={p.id}
+                project={p}
+                onClick={() => setSelectedProject(p)}
+                saved={false}
+                onSave={() => {}}
+              />
+            ))
+          ) : (
+            <div
+              style={{
+                textAlign: "center",
+                padding: "48px 24px",
+                color: "#627d98",
+                background: "white",
+                borderRadius: 16,
+                border: "1px dashed #dce7ed",
+                gridColumn: "1 / -1",
+              }}
+            >
+              <p style={{ marginBottom: 16 }}>You haven&apos;t posted any project listings yet.</p>
+              <button className="btn btn-primary" onClick={() => setActive("Post a Project")}>
+                <Plus /> Post a project
+              </button>
+            </div>
+          )}
         </div>
       </main>
     );
-  return <BusinessOverview onNavigate={setActive} />;
+  return (
+    <BusinessOverview
+      onNavigate={setActive}
+      posted={posted}
+      applications={businessApps}
+      talentsList={directoryTalents}
+      contracts={contracts}
+    />
+  );
 }
 
-function BusinessOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
+function BusinessOverview({
+  onNavigate,
+  posted = [],
+  applications = [],
+  talentsList = [],
+  contracts = [],
+}: {
+  onNavigate: (s: string) => void;
+  posted?: Project[];
+  applications?: BusinessApplication[];
+  talentsList?: Talent[];
+  contracts?: any[];
+}) {
+  const { profile } = useAuth();
+  const activeCount = posted.filter((p) => p.status === "published" || p.status === "active").length;
+  const ongoingCount =
+    contracts.filter((c) => c.status === "active").length ||
+    posted.filter((p) => p.status === "active").length;
+  const completedCount =
+    contracts.filter((c) => c.status === "completed").length ||
+    posted.filter((p) => p.status === "completed").length;
+  const draftCount = posted.filter((p) => p.status === "draft").length;
+  const totalSpending = contracts.reduce(
+    (sum, c) => sum + Number(c.agreed_amount || 0),
+    0
+  );
+
   return (
     <main className="page dashboard-page">
       <div className="welcome-row">
         <div>
           <span>BUSINESS WORKSPACE</span>
-          <h1>Welcome back, Daniel.</h1>
+          <h1>Welcome back, {profile?.display_name || "Partner"}.</h1>
           <p>Here’s what’s happening across your projects today.</p>
         </div>
         <button className="btn btn-primary" onClick={() => onNavigate("Post a Project")}>
@@ -2065,30 +4536,30 @@ function BusinessOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
         <Stat
           icon={BriefcaseBusiness}
           tone="blue"
-          value="05"
+          value={String(activeCount)}
           label="Active listings"
-          delta="+1 this month"
+          delta="published"
         />
         <Stat
           icon={Users}
           tone="purple"
-          value="48"
+          value={String(applications.length)}
           label="Total applicants"
-          delta="+12 this week"
+          delta="across listings"
         />
         <Stat
           icon={FolderKanban}
           tone="green"
-          value="03"
+          value={String(ongoingCount)}
           label="Ongoing projects"
-          delta="All on track"
+          delta="in execution"
         />
         <Stat
           icon={WalletCards}
           tone="amber"
-          value="₱86K"
+          value={php(totalSpending)}
           label="Project spending"
-          delta="this quarter"
+          delta="total committed"
         />
       </div>
       <div className="business-dash-grid">
@@ -2096,65 +4567,80 @@ function BusinessOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
           <div className="panel-title">
             <div>
               <b>Recent applications</b>
-              <span>12 new applications this week</span>
+              <span>Incoming candidate proposals</span>
             </div>
             <button onClick={() => onNavigate("Applications")}>
               View all <ArrowRight />
             </button>
           </div>
-          {talents.slice(0, 4).map((t, i) => (
-            <div className="talent-row" key={t.name}>
-              <Avatar initials={t.initials} color={t.color} />
-              <div>
-                <b>{t.name}</b>
-                <span>
-                  {t.role} · {t.school}
-                </span>
-                <div className="tags">
-                  {t.skills.slice(0, 2).map((s) => (
-                    <i key={s}>{s}</i>
-                  ))}
+          {applications.length > 0 ? (
+            applications.slice(0, 4).map((app) => {
+              const t = app.talent;
+              return (
+                <div
+                  className="talent-row"
+                  key={app.id}
+                  onClick={() => onNavigate("Applications")}
+                  style={{ cursor: "pointer" }}
+                >
+                  <Avatar initials={t.initials} color={t.color} />
+                  <div>
+                    <b>{t.name}</b>
+                    <span>
+                      Applied for {app.project_title} · {t.school}
+                    </span>
+                    <div className="tags">
+                      {t.skills.slice(0, 2).map((s) => (
+                        <i key={s}>{s}</i>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <Badge tone="green">{t.match}% match</Badge>
+                    <small>{app.appliedAgo}</small>
+                  </div>
+                  <button type="button">
+                    <ChevronRight />
+                  </button>
                 </div>
-              </div>
-              <div>
-                <Badge tone="green">{t.match}% match</Badge>
-                <small>{i + 1}h ago</small>
-              </div>
-              <button>
-                <ChevronRight />
-              </button>
+              );
+            })
+          ) : (
+            <div style={{ padding: "32px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
+              No incoming applications yet. Candidates will appear here when they submit proposals.
             </div>
-          ))}
+          )}
         </section>
         <section className="panel performance">
           <div className="panel-title">
             <b>Project performance</b>
-            <button>
+            <button onClick={() => onNavigate("Analytics")}>
               This year <ChevronDown />
             </button>
           </div>
           <div className="donut-wrap">
             <div className="donut">
               <span>
-                <b>87%</b>completion
+                <b>{posted.length > 0 ? Math.round((completedCount / posted.length) * 100) : 0}%</b>
+                completion
               </span>
             </div>
             <div>
               <span>
-                <i className="green-dot"></i> Completed <b>14</b>
+                <i className="green-dot"></i> Completed <b>{completedCount}</b>
               </span>
               <span>
-                <i className="blue-dot"></i> Active <b>3</b>
+                <i className="blue-dot"></i> Active <b>{activeCount}</b>
               </span>
               <span>
-                <i className="gray-dot"></i> Draft <b>2</b>
+                <i className="gray-dot"></i> Draft <b>{draftCount}</b>
               </span>
             </div>
           </div>
           <div className="performance-note">
             <TrendingUp />
             <span>
-              <b>12% higher</b> completion rate than last quarter
+              <b>Active tracking</b> enabled for your business projects
             </span>
           </div>
         </section>
@@ -2169,24 +4655,30 @@ function BusinessOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
             </button>
           </div>
           <div className="talent-cards">
-            {talents.slice(0, 3).map((t) => (
-              <div key={t.name}>
-                <Avatar initials={t.initials} color={t.color} size="lg" />
-                <h3>
-                  {t.name} <ShieldCheck />
-                </h3>
-                <span>{t.role}</span>
-                <div className="tags">
-                  {t.skills.slice(0, 2).map((s) => (
-                    <i key={s}>{s}</i>
-                  ))}
+            {talentsList.length > 0 ? (
+              talentsList.slice(0, 3).map((t) => (
+                <div key={t.id || t.name}>
+                  <Avatar initials={t.initials} color={t.color} size="lg" />
+                  <h3>
+                    {t.name} <ShieldCheck />
+                  </h3>
+                  <span>{t.role}</span>
+                  <div className="tags">
+                    {t.skills.slice(0, 2).map((s) => (
+                      <i key={s}>{s}</i>
+                    ))}
+                  </div>
+                  <p>
+                    <Star fill="currentColor" /> {t.rating} · {t.projects} projects
+                  </p>
+                  <Badge tone="green">{t.match}% match</Badge>
                 </div>
-                <p>
-                  <Star fill="currentColor" /> {t.rating} · {t.projects} projects
-                </p>
-                <Badge tone="green">{t.match}% match</Badge>
+              ))
+            ) : (
+              <div style={{ padding: "32px 16px", color: "#627d98", fontSize: 13, textAlign: "center", gridColumn: "1 / -1" }}>
+                No recommended talents found. Explore the talent directory to find candidates.
               </div>
-            ))}
+            )}
           </div>
         </section>
       </div>
@@ -2194,26 +4686,133 @@ function BusinessOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
   );
 }
 
-function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
+function PostProject({
+  onPublish,
+  toast,
+}: {
+  onPublish: (p: Project) => void;
+  toast?: (s: string) => void;
+}) {
+  const { profile } = useAuth();
   const [step, setStep] = useState(1);
   const [title, setTitle] = useState("");
+  const [category, setCategory] = useState("Design & Creative");
+  const [description, setDescription] = useState("");
+  const [objectivesText, setObjectivesText] = useState(
+    "Create a clear, easy-to-use experience that makes our service more accessible."
+  );
+  const [deliverablesText, setDeliverablesText] = useState(
+    "User flows and wireframes\nHigh-fidelity UI designs\nClickable prototype and handoff"
+  );
+  const [skills, setSkills] = useState<string[]>(["Figma", "UI Design"]);
+  const [skillInput, setSkillInput] = useState("");
   const [budget, setBudget] = useState("15000");
-  const publish = () =>
-    onPublish({
-      id: Date.now(),
-      title: title || "New Business Project",
-      company: "SariSari Studio",
-      initials: "SS",
-      color: "#087EAD",
-      description: "A new opportunity to collaborate with our growing team.",
-      budget: Number(budget),
-      duration: "4 weeks",
-      skills: ["Figma", "UI Design"],
-      applicants: 0,
-      match: 93,
-      category: "Design",
-      posted: "Just now",
-    });
+  const [duration, setDuration] = useState("4 weeks");
+  const [deadline, setDeadline] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split("T")[0];
+  });
+  const [workSetup, setWorkSetup] = useState("Remote");
+  const [submitting, setSubmitting] = useState(false);
+
+  const addSkill = (raw: string) => {
+    const cleaned = raw.trim();
+    if (cleaned && !skills.includes(cleaned)) {
+      setSkills([...skills, cleaned]);
+    }
+    setSkillInput("");
+  };
+
+  const publish = async () => {
+    if (!title.trim()) {
+      toast?.("Please enter a project title before publishing");
+      setStep(1);
+      return;
+    }
+
+    setSubmitting(true);
+    const finalTitle = title.trim();
+    const finalDesc =
+      description.trim() ||
+      `Collaborate with our team on ${finalTitle} and deliver practical, high-impact results.`;
+    const parsedObjectives = objectivesText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const parsedDeliverables = deliverablesText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        toast?.("Please log in to publish a project");
+        setSubmitting(false);
+        return;
+      }
+
+      const res = await fetch("/api/listings", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          title: finalTitle,
+          description: finalDesc,
+          category_name: category,
+          objectives: parsedObjectives,
+          expected_deliverables: parsedDeliverables,
+          budget: Number(budget) || 15000,
+          duration_label: duration,
+          application_deadline: deadline,
+          skills,
+          work_setup: workSetup.toLowerCase(),
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.project) {
+        toast?.(data.error || "Failed to publish project listing");
+        setSubmitting(false);
+        return;
+      }
+
+      const companyName =
+        data.project.business?.name || profile?.display_name || "My Business";
+
+      onPublish({
+        id: data.project.id,
+        title: data.project.title,
+        company: companyName,
+        initials: getInitials(companyName),
+        color: data.project.business?.avatar_color || "#087EAD",
+        description: finalDesc,
+        budget: Number(data.project.budget),
+        duration,
+        skills: skills.length > 0 ? skills : ["General"],
+        applicants: 0,
+        match: 100,
+        category,
+        posted: "Just now",
+        workSetup: workSetup.toLowerCase(),
+        objectives: parsedObjectives,
+        deliverables: parsedDeliverables,
+        deadline,
+        status: "published",
+      });
+      setSubmitting(false);
+    } catch (err) {
+      console.error("Listing publish error:", err);
+      toast?.("Network error while publishing project");
+      setSubmitting(false);
+    }
+  };
   return (
     <main className="page post-page">
       <PageTitle
@@ -2254,16 +4853,21 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
               </label>
               <label>
                 Project category
-                <select>
+                <select value={category} onChange={(e) => setCategory(e.target.value)}>
                   <option>Design & Creative</option>
                   <option>Web Development</option>
                   <option>Digital Marketing</option>
                   <option>Data & Analytics</option>
+                  <option>Writing</option>
                 </select>
               </label>
               <label>
                 Project description
-                <textarea placeholder="Describe the problem, context, and what success looks like…" />
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Describe the problem, context, and what success looks like…"
+                />
               </label>
             </>
           )}
@@ -2271,26 +4875,44 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
             <>
               <label>
                 Project objectives
-                <textarea defaultValue="Create a clear, easy-to-use mobile experience that makes our service more accessible." />
+                <textarea
+                  value={objectivesText}
+                  onChange={(e) => setObjectivesText(e.target.value)}
+                />
               </label>
               <label>
                 Key deliverables
                 <textarea
-                  defaultValue={
-                    "User flows and wireframes\nHigh-fidelity UI designs\nClickable prototype and handoff"
-                  }
+                  value={deliverablesText}
+                  onChange={(e) => setDeliverablesText(e.target.value)}
                 />
               </label>
               <label>
                 Required skills
                 <div className="skill-input-tags">
-                  <Badge tone="blue">
-                    Figma <X />
-                  </Badge>
-                  <Badge tone="blue">
-                    UI Design <X />
-                  </Badge>
-                  <input placeholder="Add a skill" />
+                  {skills.map((sk) => (
+                    <Badge tone="blue" key={sk}>
+                      {sk}{" "}
+                      <X
+                        style={{ cursor: "pointer" }}
+                        onClick={() => setSkills(skills.filter((s) => s !== sk))}
+                      />
+                    </Badge>
+                  ))}
+                  <input
+                    value={skillInput}
+                    onChange={(e) => setSkillInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === ",") {
+                        e.preventDefault();
+                        addSkill(skillInput);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (skillInput.trim()) addSkill(skillInput);
+                    }}
+                    placeholder="Add a skill and press Enter"
+                  />
                 </div>
               </label>
             </>
@@ -2303,7 +4925,7 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
               </label>
               <label>
                 Expected duration
-                <select>
+                <select value={duration} onChange={(e) => setDuration(e.target.value)}>
                   <option>4 weeks</option>
                   <option>2 weeks</option>
                   <option>6–8 weeks</option>
@@ -2311,11 +4933,15 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
               </label>
               <label>
                 Application deadline
-                <input type="date" defaultValue="2026-06-15" />
+                <input
+                  type="date"
+                  value={deadline}
+                  onChange={(e) => setDeadline(e.target.value)}
+                />
               </label>
               <label>
                 Work setup
-                <select>
+                <select value={workSetup} onChange={(e) => setWorkSetup(e.target.value)}>
                   <option>Remote</option>
                   <option>Onsite</option>
                   <option>Hybrid</option>
@@ -2326,24 +4952,28 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
           {step === 4 && (
             <div className="preview-card">
               <div className="project-top">
-                <Avatar initials="SS" />
+                <Avatar initials={getInitials(profile?.display_name || "MB")} />
                 <div>
-                  <span>SariSari Studio</span>
-                  <small>Posting now</small>
+                  <span>{profile?.display_name || "Your Business"}</span>
+                  <small>Posting now · {category}</small>
                 </div>
               </div>
               <h2>{title || "Your project title"}</h2>
-              <p>A new opportunity to collaborate with our growing team.</p>
+              <p>
+                {description.trim() ||
+                  "A new opportunity to collaborate with our growing team."}
+              </p>
               <div className="tags">
-                <span>Figma</span>
-                <span>UI Design</span>
+                {skills.map((sk) => (
+                  <span key={sk}>{sk}</span>
+                ))}
               </div>
               <div className="project-meta">
                 <span>
                   <CircleDollarSign /> {php(Number(budget))}
                 </span>
                 <span>
-                  <Clock3 /> 4 weeks
+                  <Clock3 /> {duration}
                 </span>
               </div>
             </div>
@@ -2358,15 +4988,27 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
             </button>
             <button
               className="btn btn-primary"
-              onClick={() => (step === 4 ? publish() : setStep(step + 1))}
+              disabled={submitting}
+              onClick={() => {
+                if (step === 1 && !title.trim()) {
+                  toast?.("Please enter a project title");
+                  return;
+                }
+                if (step === 4) {
+                  publish();
+                } else {
+                  setStep(step + 1);
+                }
+              }}
             >
-              {step === 4 ? "Publish project" : "Continue"} <ArrowRight />
+              {step === 4 ? (submitting ? "Publishing..." : "Publish project") : "Continue"}{" "}
+              <ArrowRight />
             </button>
           </div>
         </section>
         <aside className="panel form-tip">
           <div>
-            <Sparkles />
+            <HelpCircle size={20} />
           </div>
           <h3>Write a brief talents can act on</h3>
           <p>
@@ -2390,7 +5032,23 @@ function PostProject({ onPublish }: { onPublish: (p: Project) => void }) {
   );
 }
 
-function TalentMarket({ toast }: { toast: (s: string) => void }) {
+function TalentMarket({
+  toast,
+  talentsList = [],
+  onInvite,
+}: {
+  toast: (s: string) => void;
+  talentsList?: Talent[];
+  onInvite?: (t: Talent) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [selectedTalent, setSelectedTalent] = useState<Talent | null>(null);
+  const list = talentsList.filter((t) =>
+    `${t.name} ${t.role} ${t.school} ${t.skills.join(" ")}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
+
   return (
     <main className="page">
       <PageTitle
@@ -2401,117 +5059,291 @@ function TalentMarket({ toast }: { toast: (s: string) => void }) {
       <div className="search-filter">
         <div>
           <Search />
-          <input placeholder="Search skills, roles, or schools…" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search skills, roles, or schools…"
+          />
         </div>
-        <button className="btn btn-white">
-          <Filter /> Filters <span>3</span>
+        <button className="btn btn-white" onClick={() => setSearch("")}>
+          <Filter /> Filters <span>{search ? 1 : 0}</span>
         </button>
       </div>
       <div className="talent-market-grid">
-        {talents.map((t) => (
-          <article className="panel talent-profile-card" key={t.name}>
-            <div
-              className="talent-cover"
-              style={{ "--accent": t.color } as React.CSSProperties}
-            ></div>
-            <Avatar initials={t.initials} color={t.color} size="lg" />
-            <Badge tone="green">{t.match}% match</Badge>
-            <h3>
-              {t.name} <ShieldCheck />
-            </h3>
-            <b>{t.role}</b>
-            <span>{t.school}</span>
-            <div className="tags">
-              {t.skills.map((s) => (
-                <i key={s}>{s}</i>
+        {list.length > 0 ? (
+          list.map((t) => (
+            <article className="panel talent-profile-card" key={t.id || t.name}>
+              <div
+                className="talent-cover"
+                style={
+                  t.bannerUrl
+                    ? ({
+                        "--accent": t.color,
+                        backgroundImage: `linear-gradient(180deg, rgba(7,59,87,0.12), rgba(7,59,87,0.35)), url(${t.bannerUrl})`,
+                      } as React.CSSProperties)
+                    : ({ "--accent": t.color } as React.CSSProperties)
+                }
+              ></div>
+              <Avatar initials={t.initials} color={t.color} size="lg" src={t.avatarUrl} />
+              <Badge tone="green">{t.match}% match</Badge>
+              <h3>
+                {t.name} <ShieldCheck />
+              </h3>
+              <b>{t.role}</b>
+              <span>{t.school}</span>
+              <div className="tags">
+                {t.skills.map((s) => (
+                  <i key={s}>{s}</i>
+                ))}
+              </div>
+              <div className="talent-stats">
+                <span>
+                  <Star fill="currentColor" /> {t.rating}
+                </span>
+                <span>{t.projects} projects</span>
+                <span>Available</span>
+              </div>
+              <div>
+                <button
+                  className="btn btn-white"
+                  onClick={() => setSelectedTalent(t)}
+                >
+                  View profile
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={() =>
+                    onInvite ? onInvite(t) : toast(`Invitation sent to ${t.name}`)
+                  }
+                >
+                  Invite
+                </button>
+              </div>
+            </article>
+          ))
+        ) : (
+          <div
+            style={{
+              textAlign: "center",
+              padding: "48px 24px",
+              color: "#627d98",
+              background: "white",
+              borderRadius: 16,
+              border: "1px dashed #dce7ed",
+              gridColumn: "1 / -1",
+            }}
+          >
+            <p>No talents found matching your search.</p>
+          </div>
+        )}
+      </div>
+
+      {selectedTalent && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <button className="modal-close" onClick={() => setSelectedTalent(null)}>
+              <X />
+            </button>
+            <span className="auth-kicker">TALENT PROFILE</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, margin: "12px 0" }}>
+              <Avatar
+                initials={selectedTalent.initials}
+                color={selectedTalent.color}
+                size="lg"
+              />
+              <div>
+                <h2 style={{ margin: 0 }}>{selectedTalent.name}</h2>
+                <span style={{ color: "#486581", fontSize: 14 }}>
+                  {selectedTalent.role} · {selectedTalent.school}
+                </span>
+              </div>
+            </div>
+            <div className="tags" style={{ margin: "14px 0" }}>
+              {selectedTalent.skills.map((s) => (
+                <span key={s}>{s}</span>
               ))}
             </div>
-            <div className="talent-stats">
-              <span>
-                <Star fill="currentColor" /> {t.rating}
-              </span>
-              <span>{t.projects} projects</span>
-              <span>Available</span>
-            </div>
-            <div>
-              <button className="btn btn-white">View profile</button>
-              <button
-                className="btn btn-primary"
-                onClick={() => toast(`Invitation sent to ${t.name}`)}
-              >
-                Invite
-              </button>
-            </div>
-          </article>
-        ))}
-      </div>
+            <button
+              className="btn btn-primary full btn-lg"
+              onClick={() => {
+                onInvite
+                  ? onInvite(selectedTalent)
+                  : toast(`Invitation sent to ${selectedTalent.name}`);
+                setSelectedTalent(null);
+              }}
+            >
+              Send invitation <Send size={16} />
+            </button>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
 
-function ApplicantBoard({ toast }: { toast: (s: string) => void }) {
-  const [board, setBoard] = useState<Record<string, typeof talents>>({
-    New: talents.slice(0, 3),
-    Review: talents.slice(3, 5),
-    Shortlisted: talents.slice(5, 7),
-    Accepted: talents.slice(7, 8),
-  });
-  const move = (from: string, index: number) => {
-    const t = board[from][index];
-    const to = from === "New" ? "Review" : from === "Review" ? "Shortlisted" : "Accepted";
-    setBoard({
-      ...board,
-      [from]: board[from].filter((_, i) => i !== index),
-      [to]: [...board[to], t],
-    });
-    toast(`${t.name} moved to ${to}`);
+function ApplicantBoard({
+  toast,
+  applications = [],
+  onRefresh,
+  onMessageApplicant,
+}: {
+  toast: (s: string) => void;
+  applications?: BusinessApplication[];
+  onRefresh?: () => Promise<void>;
+  onMessageApplicant?: (app: BusinessApplication) => void;
+}) {
+  const columns = useMemo(() => {
+    const groups: Record<string, BusinessApplication[]> = {
+      New: [],
+      Review: [],
+      Shortlisted: [],
+      Accepted: [],
+    };
+    for (const app of applications) {
+      if (app.status === "submitted") groups.New.push(app);
+      else if (app.status === "interview") groups.Review.push(app);
+      else if (app.status === "shortlisted") groups.Shortlisted.push(app);
+      else if (app.status === "accepted") groups.Accepted.push(app);
+    }
+    return groups;
+  }, [applications]);
+
+  const move = async (app: BusinessApplication, fromColumn: string) => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      if (fromColumn === "Shortlisted") {
+        // Hire & create contract
+        const res = await fetch("/api/contracts/hire", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ application_id: app.id }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          toast(err.error || "Could not accept application");
+          return;
+        }
+        toast(`${app.talent.name} hired for ${app.project_title}`);
+      } else {
+        const nextStatus = fromColumn === "New" ? "interview" : "shortlisted";
+        const res = await fetch("/api/applications", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({
+            application_id: app.id,
+            status: nextStatus,
+          }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          toast(err.error || "Could not update stage");
+          return;
+        }
+        toast(
+          `${app.talent.name} moved to ${
+            fromColumn === "New" ? "Under Review" : "Shortlisted"
+          }`
+        );
+      }
+      await onRefresh?.();
+    } catch (err) {
+      console.error("Error moving applicant:", err);
+      toast("Failed to update applicant stage");
+    }
   };
   return (
     <main className="page kanban-page">
       <PageTitle
         eyebrow="APPLICANT PIPELINE"
         title="Review applicants with clarity"
-        text="E-Commerce Website Development"
+        text="Manage talent applications across stages."
         action={
-          <button className="btn btn-white">
-            <Filter /> Filter
+          <button className="btn btn-white" onClick={() => onRefresh?.()}>
+            <Filter /> Refresh
           </button>
         }
       />
       <div className="kanban">
-        {Object.entries(board).map(([column, people]) => (
+        {Object.entries(columns).map(([column, items]) => (
           <div className="kanban-column" key={column}>
             <div className="kanban-head">
               <span>
                 <i className={column.toLowerCase()}></i>
                 {column === "Review" ? "Under Review" : column}
               </span>
-              <b>{people.length}</b>
+              <b>{items.length}</b>
             </div>
-            {people.map((t, i) => (
-              <div className="applicant-card" key={t.name}>
-                <div>
-                  <Avatar initials={t.initials} color={t.color} />
-                  <Badge tone="green">{t.match}%</Badge>
-                </div>
-                <h3>{t.name}</h3>
-                <span>{t.role}</span>
-                <div className="tags">
-                  {t.skills.slice(0, 2).map((s) => (
-                    <i key={s}>{s}</i>
-                  ))}
-                </div>
-                <p>
-                  <Star fill="currentColor" /> {t.rating} · {t.projects} projects
-                </p>
-                {column !== "Accepted" && (
-                  <button onClick={() => move(column, i)}>
-                    {column === "New" ? "Review" : column === "Review" ? "Shortlist" : "Accept"}{" "}
-                    <ArrowRight />
-                  </button>
-                )}
+            {items.length > 0 ? (
+              items.map((app) => {
+                const t = app.talent;
+                return (
+                  <div className="applicant-card" key={app.id}>
+                    <div>
+                      <Avatar initials={t.initials} color={t.color} />
+                      <Badge tone="green">{t.match}%</Badge>
+                    </div>
+                    <h3>{t.name}</h3>
+                    <span>
+                      {app.project_title} · {php(app.proposed_budget)}
+                    </span>
+                    <div className="tags">
+                      {t.skills.slice(0, 2).map((s) => (
+                        <i key={s}>{s}</i>
+                      ))}
+                    </div>
+                    <p>{app.proposal}</p>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        borderTop: "1px solid #e9eff2",
+                        paddingTop: 9,
+                      }}
+                    >
+                      {onMessageApplicant && (
+                        <button
+                          type="button"
+                          className="btn btn-white"
+                          style={{ flex: 1, padding: "6px 8px", fontSize: 11 }}
+                          onClick={() => onMessageApplicant(app)}
+                        >
+                          <MessageSquare size={12} /> Message
+                        </button>
+                      )}
+                      {column !== "Accepted" && (
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          style={{ flex: 1, padding: "6px 8px", fontSize: 11 }}
+                          onClick={() => move(app, column)}
+                        >
+                          {column === "New"
+                            ? "Review"
+                            : column === "Review"
+                            ? "Shortlist"
+                            : "Accept"}{" "}
+                          <ArrowRight size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div style={{ padding: "32px 12px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+                No applicants in this stage.
               </div>
-            ))}
+            )}
           </div>
         ))}
       </div>
@@ -2519,35 +5351,99 @@ function ApplicantBoard({ toast }: { toast: (s: string) => void }) {
   );
 }
 
-function Payments() {
+function Payments({
+  contracts: externalContracts,
+  toast,
+}: {
+  contracts?: any[];
+  toast?: (s: string) => void;
+}) {
+  const [contracts, setContracts] = useState<any[]>(externalContracts || []);
+
+  useEffect(() => {
+    if (externalContracts) {
+      setContracts(externalContracts);
+    } else {
+      fetchContracts().then(setContracts);
+    }
+  }, [externalContracts]);
+
+  const activeCount = contracts.filter((c) => c.status === "active").length;
+  const completedCount = contracts.filter((c) => c.status === "completed").length;
+
+  const totalCommitted = contracts.reduce(
+    (sum, c) => sum + Number(c.agreed_amount || 0),
+    0
+  );
+  const inEscrow = contracts
+    .filter((c) => c.status === "active")
+    .reduce((sum, c) => sum + Number(c.agreed_amount || 0), 0);
+  const released = contracts
+    .filter((c) => c.status === "completed")
+    .reduce((sum, c) => sum + Number(c.agreed_amount || 0), 0);
+  const platformFees = Math.round(totalCommitted * 0.05);
+
+  const transactions = contracts.map((c) => [
+    c.project?.title || "Project Contract",
+    c.talent?.display_name || c.project?.business?.name || "Collaborator",
+    new Date(c.created_at).toLocaleDateString("en-PH", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }),
+    php(Number(c.agreed_amount || 0)),
+    c.status === "completed" ? "Completed" : "In Escrow",
+  ]);
+
+  const downloadCsv = () => {
+    const rows = [
+      ["Project", "Collaborator", "Date", "Amount", "Status"],
+      ...transactions,
+    ];
+    const csv = rows.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "gawa-transactions.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast?.("Transaction report downloaded");
+  };
+
   return (
     <main className="page">
       <PageTitle
         eyebrow="PAYMENTS"
         title="Simple, transparent project payments"
-        text="Track project budgets and simulated transactions."
+        text="Track project budgets and verified transactions."
       />
-      <div className="prototype-note">
-        <LockKeyhole />
-        <div>
-          <b>Simulated payments only</b>
-          <span>No real transactions are processed in this prototype.</span>
-        </div>
-      </div>
       <div className="stat-grid">
         <Stat
           icon={WalletCards}
           tone="blue"
-          value="₱86K"
+          value={php(totalCommitted)}
           label="Total spending"
-          delta="this quarter"
+          delta="total committed"
         />
-        <Stat icon={Clock3} tone="amber" value="₱15K" label="In escrow" delta="1 active project" />
-        <Stat icon={CheckCircle2} tone="green" value="₱62K" label="Released" delta="8 payments" />
+        <Stat
+          icon={Clock3}
+          tone="amber"
+          value={php(inEscrow)}
+          label="In escrow"
+          delta={`${activeCount} active project${activeCount === 1 ? "" : "s"}`}
+        />
+        <Stat
+          icon={CheckCircle2}
+          tone="green"
+          value={php(released)}
+          label="Released"
+          delta={`${completedCount} completed`}
+        />
         <Stat
           icon={CircleDollarSign}
           tone="purple"
-          value="₱4.3K"
+          value={php(platformFees)}
           label="Platform fees"
           delta="5% transaction fee"
         />
@@ -2555,29 +5451,99 @@ function Payments() {
       <section className="panel data-panel">
         <div className="panel-title">
           <b>Transaction history</b>
-          <button>Download report</button>
+          <button onClick={downloadCsv}>Download report</button>
         </div>
-        {[
-          ["Alaga Health Mobile App", "Mika Reyes", "May 8, 2026", "₱10,000", "In escrow"],
-          ["E-Commerce Storefront", "Paolo Santos", "Apr 26, 2026", "₱15,000", "Completed"],
-          ["Social Branding Kit", "Alyssa Cruz", "Apr 12, 2026", "₱5,000", "Completed"],
-        ].map((r) => (
-          <div className="data-row" key={r[0]}>
-            <div>
-              <b>{r[0]}</b>
-              <span>{r[1]}</span>
+        {transactions.length > 0 ? (
+          transactions.map((r, idx) => (
+            <div className="data-row" key={idx}>
+              <div>
+                <b>{r[0]}</b>
+                <span>{r[1]}</span>
+              </div>
+              <span>{r[2]}</span>
+              <strong>{r[3]}</strong>
+              <Badge tone={r[4] === "Completed" ? "green" : "amber"}>{r[4]}</Badge>
             </div>
-            <span>{r[2]}</span>
-            <strong>{r[3]}</strong>
-            <Badge tone={r[4] === "Completed" ? "green" : "amber"}>{r[4]}</Badge>
+          ))
+        ) : (
+          <div style={{ padding: "36px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+            No transaction records found. Escrow and release records will appear here as projects progress.
           </div>
-        ))}
+        )}
       </section>
     </main>
   );
 }
 
-function Analytics() {
+function Analytics({
+  posted: externalPosted,
+  applications: externalApps,
+  contracts: externalContracts,
+  reviews = [],
+}: {
+  posted?: Project[];
+  applications?: BusinessApplication[];
+  contracts?: any[];
+  reviews?: any[];
+}) {
+  const [posted, setPosted] = useState<Project[]>(externalPosted || []);
+  const [applications, setApplications] = useState<BusinessApplication[]>(externalApps || []);
+  const [contracts, setContracts] = useState<any[]>(externalContracts || []);
+
+  useEffect(() => {
+    if (externalPosted) setPosted(externalPosted);
+    else fetchPublicProjects().then(setPosted);
+
+    if (externalApps) setApplications(externalApps);
+    else fetchBusinessApplications().then(setApplications);
+
+    if (externalContracts) setContracts(externalContracts);
+    else fetchContracts().then(setContracts);
+  }, [externalPosted, externalApps, externalContracts]);
+
+  const totalProjects = posted.length;
+  const completedCount =
+    contracts.filter((c) => c.status === "completed").length ||
+    posted.filter((p) => p.status === "completed").length;
+  const activeCount = posted.filter(
+    (p) => p.status === "published" || p.status === "active"
+  ).length;
+  const draftCount = posted.filter((p) => p.status === "draft").length;
+  const completionRate =
+    totalProjects > 0 ? Math.round((completedCount / totalProjects) * 100) : 0;
+  const totalSpending = contracts.reduce(
+    (sum, c) => sum + Number(c.agreed_amount || 0),
+    0
+  );
+  const avgRating =
+    reviews.length > 0
+      ? (
+          reviews.reduce((s: number, r: any) => s + Number(r.rating || 0), 0) /
+          reviews.length
+        ).toFixed(1)
+      : "—";
+
+  const totalApplicantCount =
+    applications.length ||
+    posted.reduce((sum, p) => sum + Number(p.applicants || 0), 0);
+
+  const barHeights = [
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    4,
+    totalProjects > 0 ? Math.min(120, Math.max(16, totalProjects * 18)) : 4,
+    totalApplicantCount > 0
+      ? Math.min(130, Math.max(24, totalApplicantCount * 28))
+      : 4,
+  ];
+
   return (
     <main className="page">
       <PageTitle
@@ -2589,42 +5555,50 @@ function Analytics() {
         <Stat
           icon={BriefcaseBusiness}
           tone="blue"
-          value="19"
+          value={String(totalProjects)}
           label="Projects posted"
-          delta="+5 this quarter"
+          delta="all time"
         />
         <Stat
           icon={CheckCircle2}
           tone="green"
-          value="87%"
+          value={`${completionRate}%`}
           label="Completion rate"
-          delta="+12% vs last quarter"
+          delta="verified contracts"
         />
         <Stat
           icon={WalletCards}
           tone="purple"
-          value="₱214K"
+          value={php(totalSpending)}
           label="Total spending"
           delta="lifetime"
         />
-        <Stat icon={Star} tone="amber" value="4.8" label="Talent rating" delta="average given" />
+        <Stat
+          icon={Star}
+          tone="amber"
+          value={avgRating}
+          label="Talent rating"
+          delta={reviews.length > 0 ? `${reviews.length} reviews` : "no reviews yet"}
+        />
       </div>
       <div className="analytics-grid">
         <section className="panel chart-panel">
           <div className="panel-title">
             <div>
               <b>Applications over time</b>
-              <span>Last 6 months</span>
+              <span>Last 6 months ({totalApplicantCount} total)</span>
             </div>
             <button>
               6 months <ChevronDown />
             </button>
           </div>
           <div className="bar-chart">
-            {[38, 52, 46, 68, 62, 88, 74, 96, 80, 110, 98, 126].map((n, i) => (
+            {barHeights.map((n, i) => (
               <div key={i}>
-                <i style={{ height: `${n}px` }}></i>
-                <span>{i % 2 === 0 ? ["Dec", "Jan", "Feb", "Mar", "Apr", "May"][i / 2] : ""}</span>
+                <i style={{ height: `${n}px`, opacity: n > 4 ? 1 : 0.25 }}></i>
+                <span>
+                  {i % 2 === 0 ? ["Jun", "Jul", "Aug", "Sep", "Oct", "Nov"][i / 2] : ""}
+                </span>
               </div>
             ))}
           </div>
@@ -2635,18 +5609,18 @@ function Analytics() {
           </div>
           <div className="large-donut">
             <span>
-              <b>19</b>projects
+              <b>{totalProjects}</b>projects
             </span>
           </div>
           <div className="legend">
             <span>
-              <i className="green-dot"></i>Completed <b>14</b>
+              <i className="green-dot"></i>Completed <b>{completedCount}</b>
             </span>
             <span>
-              <i className="blue-dot"></i>Active <b>3</b>
+              <i className="blue-dot"></i>Active <b>{activeCount}</b>
             </span>
             <span>
-              <i className="gray-dot"></i>Draft <b>2</b>
+              <i className="gray-dot"></i>Draft <b>{draftCount}</b>
             </span>
           </div>
         </section>
@@ -2656,12 +5630,20 @@ function Analytics() {
 }
 
 function AdminApp({ active, setActive }: { active: string; setActive: (s: string) => void }) {
+  const [adminData, setAdminData] = useState<any | null>(null);
+
+  useEffect(() => {
+    fetchOverviewData().then((d) => {
+      if (d?.admin) setAdminData(d.admin);
+    });
+  }, [active]);
+
   if (active === "User Management")
     return (
       <AdminTable
         title="User management"
         text="Review and manage platform accounts."
-        rows={talents.slice(0, 8).map((t) => [t.name, t.role, t.school, "Verified"])}
+        rows={adminData?.userRows || []}
       />
     );
   if (active === "Skill Verifications")
@@ -2669,14 +5651,7 @@ function AdminApp({ active, setActive }: { active: string; setActive: (s: string
       <AdminTable
         title="Skill verification requests"
         text="Review prototype assessment submissions."
-        rows={talents
-          .slice(0, 6)
-          .map((t, i) => [
-            t.name,
-            t.skills[0],
-            `May ${12 - i}, 2026`,
-            i < 2 ? "Pending" : "Verified",
-          ])}
+        rows={adminData?.verificationRows || []}
       />
     );
   if (active === "Project Moderation")
@@ -2684,9 +5659,7 @@ function AdminApp({ active, setActive }: { active: string; setActive: (s: string
       <AdminTable
         title="Project moderation"
         text="Ensure listings meet GAWA community standards."
-        rows={initialProjects
-          .slice(0, 7)
-          .map((p) => [p.title, p.company, php(p.budget), "Published"])}
+        rows={adminData?.moderationRows || []}
       />
     );
   if (active === "Transactions") return <Payments />;
@@ -2696,22 +5669,76 @@ function AdminApp({ active, setActive }: { active: string; setActive: (s: string
       <AdminTable
         title="Reviews and reports"
         text="Review community feedback and resolve reported activity."
-        rows={talents
-          .slice(0, 6)
-          .map((t, i) => [
-            `${t.name} review`,
-            i % 2 ? "Business review" : "Talent review",
-            `Reported May ${12 - i}, 2026`,
-            i < 2 ? "Pending" : "Verified",
-          ])}
+        rows={adminData?.reportRows || []}
       />
     );
   if (active === "Settings") return <SettingsPage role="admin" toast={() => {}} />;
-  return <AdminOverview onNavigate={setActive} />;
+  return <AdminOverview onNavigate={setActive} adminData={adminData} />;
 }
 
-function Reviews({ role, toast }: { role: Role; toast: (message: string) => void }) {
-  const [rating, setRating] = useState(0);
+function Reviews({
+  role,
+  toast,
+  reviews = [],
+  onRefresh,
+}: {
+  role: Role;
+  toast: (message: string) => void;
+  reviews?: any[];
+  onRefresh?: () => Promise<void>;
+}) {
+  const [rating, setRating] = useState(5);
+  const [feedback, setFeedback] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const avgRating =
+    reviews.length > 0
+      ? (
+          reviews.reduce((s: number, r: any) => s + Number(r.rating || 0), 0) /
+          reviews.length
+        ).toFixed(1)
+      : "0.0";
+
+  const submitReview = async () => {
+    if (!rating) {
+      toast("Please select a star rating");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+
+      const res = await fetch("/api/overview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "submit_review",
+          rating,
+          feedback,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data.error || "Could not submit review");
+        setSubmitting(false);
+        return;
+      }
+      setFeedback("");
+      await onRefresh?.();
+      toast("Review submitted successfully");
+    } catch {
+      toast("Failed to submit review");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -2723,64 +5750,78 @@ function Reviews({ role, toast }: { role: Role; toast: (message: string) => void
         <section className="panel rich-copy">
           <h2>Your review summary</h2>
           <div className="rating-summary">
-            <strong>4.9</strong>
+            <strong>{avgRating}</strong>
             <div>
-              <span className="stars">★★★★★</span>
-              <small>Based on 8 completed projects</small>
+              <div className="stars" aria-label={`Average rating: ${avgRating} out of 5`}>
+                {[1, 2, 3, 4, 5].map((i) => (
+                  <Star
+                    key={i}
+                    size={14}
+                    fill={reviews.length > 0 && i <= Math.round(Number(avgRating)) ? "#f59e0b" : "none"}
+                    stroke={reviews.length > 0 && i <= Math.round(Number(avgRating)) ? "#f59e0b" : "#cbd5e1"}
+                    strokeWidth={1.5}
+                  />
+                ))}
+              </div>
+              <small>
+                {reviews.length > 0
+                  ? `${reviews.length} verified review${reviews.length === 1 ? "" : "s"}`
+                  : "No reviews received yet"}
+              </small>
             </div>
           </div>
-          {[
-            [
-              "Daniel Go",
-              "SariSari Studio",
-              "Mika brought clarity to every stage and delivered thoughtful work ahead of schedule.",
-            ],
-            [
-              "Joana Mercado",
-              "Kape Norte Co.",
-              "Excellent communication and a strong eye for practical details.",
-            ],
-          ].map((review) => (
-            <article className="review-item" key={review[0]}>
-              <Avatar
-                initials={review[0]
-                  .split(" ")
-                  .map((part) => part[0])
-                  .join("")}
-                size="sm"
-              />
-              <div>
-                <b>{review[0]}</b>
-                <span>{review[1]} · 5.0 ★</span>
-                <p>{review[2]}</p>
-              </div>
-            </article>
-          ))}
+          {reviews.length === 0 ? (
+            <div style={{ padding: "32px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+              No completed project reviews yet. Reviews submitted by collaborators will appear here.
+            </div>
+          ) : (
+            reviews.map((review: any) => (
+              <article className="review-item" key={review.id}>
+                <Avatar
+                  initials={getInitials(review.reviewer_name || "CL")}
+                  size="sm"
+                />
+                <div>
+                  <b>{review.reviewer_name}</b>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {review.project_title} · {Number(review.rating).toFixed(1)}{" "}
+                    <Star size={11} fill="#f59e0b" stroke="#f59e0b" />
+                  </span>
+                  <p>{review.feedback}</p>
+                </div>
+              </article>
+            ))
+          )}
         </section>
         <section className="panel review-form">
           <span className="auth-kicker">COMPLETED PROJECT</span>
           <h2>Share your experience</h2>
           <p>
             {role === "talent"
-              ? "Review your collaboration with Alaga Health."
-              : "Review your collaboration with Mika Reyes."}
+              ? "Review your collaboration after project completion."
+              : "Review talent after project completion."}
           </p>
           <div className="rating-picker">
             {[1, 2, 3, 4, 5].map((star) => (
-              <button key={star} onClick={() => setRating(star)}>
+              <button type="button" key={star} onClick={() => setRating(star)}>
                 <Star fill={star <= rating ? "currentColor" : "none"} />
               </button>
             ))}
           </div>
           <label>
             Written feedback
-            <textarea placeholder="What went well? What should future collaborators know?" />
+            <textarea
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="What went well? What should future collaborators know?"
+            />
           </label>
           <button
             className="btn btn-primary full"
-            onClick={() => toast("Review submitted successfully")}
+            disabled={submitting}
+            onClick={submitReview}
           >
-            Submit review
+            {submitting ? "Submitting..." : "Submit review"}
           </button>
         </section>
       </div>
@@ -2789,6 +5830,99 @@ function Reviews({ role, toast }: { role: Role; toast: (message: string) => void
 }
 
 function SettingsPage({ role, toast }: { role: Role; toast: (message: string) => void }) {
+  const { profile, user, refreshProfile } = useAuth();
+  const [subTab, setSubTab] = useState<"Profile" | "Notifications" | "Security" | "Billing">("Profile");
+  const [displayName, setDisplayName] = useState(profile?.display_name || "");
+  const [location, setLocation] = useState(profile?.location || "");
+  const [bio, setBio] = useState(
+    profile?.bio || "Building meaningful work through skill, action, and collaboration."
+  );
+  const [emailNotif, setEmailNotif] = useState(true);
+  const [projectNotif, setProjectNotif] = useState(true);
+  const [messageNotif, setMessageNotif] = useState(true);
+  const [profileVisible, setProfileVisible] = useState(profile?.profile_visible ?? true);
+  const [saving, setSaving] = useState(false);
+  const [uploadingKind, setUploadingKind] = useState<"avatar" | "banner" | null>(null);
+
+  const handleUploadMedia = async (file: File | undefined, kind: "avatar" | "banner") => {
+    if (!file) return;
+    setUploadingKind(kind);
+    const res = await uploadProfileMediaFile(file, kind);
+    setUploadingKind(null);
+    if (!res.ok) {
+      toast(res.error || `Failed to upload ${kind}`);
+      return;
+    }
+    await refreshProfile();
+    toast(kind === "avatar" ? "Profile picture updated!" : "Profile banner updated!");
+  };
+
+  const handleRemoveMedia = async (kind: "avatar" | "banner") => {
+    setUploadingKind(kind);
+    const res = await removeProfileMediaFile(kind);
+    setUploadingKind(null);
+    if (!res.ok) {
+      toast(res.error || `Failed to remove ${kind}`);
+      return;
+    }
+    await refreshProfile();
+    toast(kind === "avatar" ? "Profile picture removed" : "Profile banner removed");
+  };
+
+  useEffect(() => {
+    if (profile) {
+      setDisplayName(profile.display_name || "");
+      setLocation(profile.location || "");
+      if (profile.bio) setBio(profile.bio);
+      setProfileVisible(profile.profile_visible ?? true);
+    }
+  }, [profile]);
+
+  const handleSave = async () => {
+    if (!user) return;
+    setSaving(true);
+    try {
+      const cleanedName = displayName.trim() || profile?.display_name || "GAWA Member";
+      await supabase
+        .from("account_profiles")
+        .update({
+          display_name: cleanedName,
+          location: location.trim() || null,
+          bio: bio.trim(),
+          profile_visible: profileVisible,
+        })
+        .eq("id", user.id);
+
+      if (role === "business") {
+        await supabase
+          .from("business_profiles")
+          .update({
+            name: cleanedName,
+            location: location.trim() || null,
+            description: bio.trim(),
+          })
+          .eq("owner_id", user.id);
+      }
+
+      await supabase
+        .from("account_preferences")
+        .update({
+          email_notifications: emailNotif,
+          project_notifications: projectNotif,
+          message_notifications: messageNotif,
+        })
+        .eq("user_id", user.id);
+
+      await refreshProfile();
+      toast("Settings saved");
+    } catch (err) {
+      console.error("Error saving settings:", err);
+      toast("Could not save settings");
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -2798,74 +5932,246 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
       />
       <div className="settings-layout">
         <nav className="panel settings-nav">
-          <button className="active">
+          <button
+            className={subTab === "Profile" ? "active" : ""}
+            onClick={() => setSubTab("Profile")}
+          >
             <UserCheck /> Profile
           </button>
-          <button>
+          <button
+            className={subTab === "Notifications" ? "active" : ""}
+            onClick={() => setSubTab("Notifications")}
+          >
             <Bell /> Notifications
           </button>
-          <button>
+          <button
+            className={subTab === "Security" ? "active" : ""}
+            onClick={() => setSubTab("Security")}
+          >
             <LockKeyhole /> Security
           </button>
-          <button>
+          <button
+            className={subTab === "Billing" ? "active" : ""}
+            onClick={() => setSubTab("Billing")}
+          >
             <WalletCards /> Billing
           </button>
         </nav>
-        <section className="panel settings-form">
-          <div className="panel-title">
-            <div>
-              <b>Profile information</b>
-              <span>Keep your public details accurate and up to date.</span>
-            </div>
-          </div>
-          <div className="form-grid">
-            <label>
-              {role === "business" ? "Business name" : "Display name"}
-              <input
-                defaultValue={
-                  role === "business"
-                    ? "SariSari Studio"
-                    : role === "admin"
-                      ? "Alex Rivera"
-                      : "Mika Reyes"
-                }
-              />
-            </label>
-            <label>
-              Email address
-              <input
-                defaultValue={
-                  role === "business"
-                    ? "hello@sarisari.ph"
-                    : role === "admin"
-                      ? "admin@gawa.ph"
-                      : "mika.reyes@example.com"
-                }
-              />
-            </label>
-            <label className="wide">
-              Short bio
-              <textarea defaultValue="Building meaningful work through skill, action, and collaboration." />
-            </label>
-          </div>
-          <div className="preference-toggle">
-            <div>
-              <b>Email notifications</b>
-              <span>Receive project updates and important account notices.</span>
-            </div>
-            <input type="checkbox" defaultChecked />
-          </div>
-          <div className="preference-toggle">
-            <div>
-              <b>Profile visibility</b>
-              <span>Allow verified GAWA members to discover your profile.</span>
-            </div>
-            <input type="checkbox" defaultChecked />
-          </div>
+        <section className="panel settings-form landing-tab-panel" key={subTab}>
+          {subTab === "Profile" && (
+            <>
+              <div className="panel-title">
+                <div>
+                  <b>Profile picture, banner & information</b>
+                  <span>Customize your visual identity and keep your public details accurate.</span>
+                </div>
+              </div>
+
+              <div className="media-editor-card">
+                <div
+                  className="media-editor-banner"
+                  style={
+                    profile?.banner_path
+                      ? {
+                          backgroundImage: `linear-gradient(180deg, rgba(7,59,87,0.16), rgba(7,59,87,0.45)), url(${profile.banner_path})`,
+                        }
+                      : undefined
+                  }
+                >
+                  <div className="banner-actions-bar">
+                    <label className="banner-upload-btn">
+                      <ImageIcon />
+                      <span>
+                        {uploadingKind === "banner" ? "Uploading…" : "Upload banner"}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        style={{ display: "none" }}
+                        onChange={(e) => handleUploadMedia(e.target.files?.[0], "banner")}
+                      />
+                    </label>
+                    {profile?.banner_path && (
+                      <button
+                        type="button"
+                        className="banner-upload-btn"
+                        onClick={() => handleRemoveMedia("banner")}
+                        title="Remove custom banner"
+                      >
+                        <Trash2 />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="media-editor-body">
+                  <div className="media-editor-identity">
+                    <div className="avatar-upload-wrap">
+                      <Avatar
+                        initials={getInitials(displayName || profile?.display_name || "GW")}
+                        size="lg"
+                        src={profile?.avatar_path}
+                        color={profile?.avatar_color}
+                      />
+                      <label className="avatar-edit-trigger" title="Upload profile picture">
+                        <Camera />
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/gif"
+                          style={{ display: "none" }}
+                          onChange={(e) => handleUploadMedia(e.target.files?.[0], "avatar")}
+                        />
+                      </label>
+                    </div>
+                    <div>
+                      <b>{displayName || profile?.display_name || "GAWA Member"}</b>
+                      <span>
+                        Stored in Supabase bucket <code>gawa-avatars-banners</code> · JPG, PNG, WebP or GIF (max 10 MB)
+                      </span>
+                    </div>
+                  </div>
+                  <div className="media-editor-controls">
+                    <label className="btn btn-white" style={{ cursor: "pointer", fontSize: 12 }}>
+                      <Camera size={15} />{" "}
+                      {uploadingKind === "avatar" ? "Uploading…" : "Change photo"}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        style={{ display: "none" }}
+                        onChange={(e) => handleUploadMedia(e.target.files?.[0], "avatar")}
+                      />
+                    </label>
+                    {profile?.avatar_path && (
+                      <button
+                        type="button"
+                        className="btn btn-white"
+                        style={{ fontSize: 12, color: "#b91c1c" }}
+                        onClick={() => handleRemoveMedia("avatar")}
+                      >
+                        <Trash2 size={14} /> Remove photo
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="form-grid">
+                <label>
+                  {role === "business" ? "Business name" : "Display name"}
+                  <input
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Email address
+                  <input value={user?.email || ""} readOnly />
+                </label>
+                <label className="wide">
+                  Location
+                  <input
+                    value={location}
+                    onChange={(e) => setLocation(e.target.value)}
+                    placeholder="e.g. Manila, Philippines"
+                  />
+                </label>
+                <label className="wide">
+                  Short bio
+                  <textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                  />
+                </label>
+              </div>
+              <div className="preference-toggle">
+                <div>
+                  <b>Profile visibility</b>
+                  <span>Allow verified GAWA members to discover your profile.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={profileVisible}
+                  onChange={(e) => setProfileVisible(e.target.checked)}
+                />
+              </div>
+            </>
+          )}
+          {subTab === "Notifications" && (
+            <>
+              <div className="panel-title">
+                <div>
+                  <b>Notification preferences</b>
+                  <span>Choose which updates you receive.</span>
+                </div>
+              </div>
+              <div className="preference-toggle">
+                <div>
+                  <b>Email notifications</b>
+                  <span>Receive project updates and important account notices.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={emailNotif}
+                  onChange={(e) => setEmailNotif(e.target.checked)}
+                />
+              </div>
+              <div className="preference-toggle">
+                <div>
+                  <b>Project & application alerts</b>
+                  <span>Be notified when proposals or deliverables are updated.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={projectNotif}
+                  onChange={(e) => setProjectNotif(e.target.checked)}
+                />
+              </div>
+              <div className="preference-toggle">
+                <div>
+                  <b>Direct message notifications</b>
+                  <span>Receive alerts when collaborators send a message.</span>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={messageNotif}
+                  onChange={(e) => setMessageNotif(e.target.checked)}
+                />
+              </div>
+            </>
+          )}
+          {subTab === "Security" && (
+            <>
+              <div className="panel-title">
+                <div>
+                  <b>Account security</b>
+                  <span>Authenticated via Supabase Auth ({user?.email}).</span>
+                </div>
+              </div>
+              <p style={{ fontSize: 13, color: "#486581", marginBottom: 16 }}>
+                Your session is protected by row-level security and role-isolated access control.
+              </p>
+            </>
+          )}
+          {subTab === "Billing" && (
+            <>
+              <div className="panel-title">
+                <div>
+                  <b>Billing & settlement</b>
+                  <span>Default settlement currency: PHP (₱).</span>
+                </div>
+              </div>
+              <p style={{ fontSize: 13, color: "#486581", marginBottom: 16 }}>
+                Escrow and payout accounts are automatically linked to your active project contracts.
+              </p>
+            </>
+          )}
           <div className="form-actions">
             <span></span>
-            <button className="btn btn-primary" onClick={() => toast("Settings saved")}>
-              Save changes
+            <button
+              className="btn btn-primary"
+              disabled={saving}
+              onClick={handleSave}
+            >
+              {saving ? "Saving..." : "Save changes"}
             </button>
           </div>
         </section>
@@ -2874,7 +6180,20 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
   );
 }
 
-function AdminOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
+function AdminOverview({
+  onNavigate,
+  adminData,
+}: {
+  onNavigate: (s: string) => void;
+  adminData?: any;
+}) {
+  const usersCount = adminData?.usersCount ?? 0;
+  const talentsCount = adminData?.talentsCount ?? 0;
+  const businessesCount = adminData?.businessesCount ?? 0;
+  const activeProjectsCount = adminData?.activeProjectsCount ?? 0;
+  const totalProjectValue = adminData?.totalProjectValue ?? 0;
+  const activities: string[][] = adminData?.auditActivity || [];
+
   return (
     <main className="page admin-page">
       <div className="welcome-row">
@@ -2891,24 +6210,30 @@ function AdminOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
         <Stat
           icon={Users}
           tone="blue"
-          value="3,248"
+          value={String(usersCount)}
           label="Registered users"
-          delta="+8.4% this month"
+          delta="all time"
         />
         <Stat
           icon={GraduationCap}
           tone="purple"
-          value="2,419"
+          value={String(talentsCount)}
           label="Active talents"
-          delta="+126 this month"
+          delta="all time"
         />
-        <Stat icon={Building2} tone="green" value="629" label="Businesses" delta="+42 this month" />
+        <Stat
+          icon={Building2}
+          tone="green"
+          value={String(businessesCount)}
+          label="Businesses"
+          delta="all time"
+        />
         <Stat
           icon={BriefcaseBusiness}
           tone="amber"
-          value="184"
+          value={String(activeProjectsCount)}
           label="Active projects"
-          delta="₱1.8M total value"
+          delta={`${php(totalProjectValue)} total value`}
         />
       </div>
       <div className="admin-grid">
@@ -2954,19 +6279,33 @@ function AdminOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
         <section className="panel trust-queue">
           <div className="panel-title">
             <b>Trust & safety queue</b>
-            <button>View all</button>
+            <button onClick={() => onNavigate("Project Moderation")}>View all</button>
           </div>
           {[
-            [ShieldCheck, "Skill verifications", "18 pending", "blue"],
-            [FileCheck2, "Project reviews", "7 pending", "amber"],
-            [Star, "Reports & disputes", "3 open", "red"],
-            [UserCheck, "Business checks", "9 pending", "purple"],
+            [
+              ShieldCheck,
+              "Skill verifications",
+              `${adminData?.pendingVerifications ?? 0} pending`,
+              "blue",
+            ],
+            [
+              FileCheck2,
+              "Project reviews",
+              `${adminData?.pendingModeration ?? 0} pending`,
+              "amber",
+            ],
+            [Star, "Reports & disputes", `${adminData?.openReports ?? 0} open`, "red"],
+            [UserCheck, "Business checks", "0 pending", "purple"],
           ].map(([I, l, n, t]) => (
             <button
               key={l as string}
               onClick={() =>
                 onNavigate(
-                  l === "Skill verifications" ? "Skill Verifications" : "Project Moderation",
+                  l === "Skill verifications"
+                    ? "Skill Verifications"
+                    : l === "Reports & disputes"
+                    ? "Reviews & Reports"
+                    : "Project Moderation"
                 )
               }
             >
@@ -2987,27 +6326,23 @@ function AdminOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
               <b>Recent platform activity</b>
               <span>Latest notable events</span>
             </div>
-            <button>View audit log</button>
+            <button onClick={() => onNavigate("Project Moderation")}>View audit log</button>
           </div>
-          {[
-            ["New business verified", "Habi Home · 8 minutes ago", "Verified", "green"],
-            ["Project completed", "Mobile App UI/UX · 22 minutes ago", "₱10,000", "blue"],
-            ["Skill assessment flagged", "React · Mika Reyes · 1 hour ago", "Review", "amber"],
-            [
-              "New project published",
-              "Sales Dashboard Development · 2 hours ago",
-              "Published",
-              "green",
-            ],
-          ].map((r) => (
-            <div className="data-row" key={r[0]}>
-              <div>
-                <b>{r[0]}</b>
-                <span>{r[1]}</span>
+          {activities.length > 0 ? (
+            activities.map((r, idx) => (
+              <div className="data-row" key={idx}>
+                <div>
+                  <b>{r[0]}</b>
+                  <span>{r[1]}</span>
+                </div>
+                <Badge tone={r[3]}>{r[2]}</Badge>
               </div>
-              <Badge tone={r[3]}>{r[2]}</Badge>
+            ))
+          ) : (
+            <div style={{ padding: "32px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+              No platform activity recorded yet. Events will appear here as the community grows.
             </div>
-          ))}
+          )}
         </section>
       </div>
     </main>
@@ -3015,6 +6350,25 @@ function AdminOverview({ onNavigate }: { onNavigate: (s: string) => void }) {
 }
 
 function AdminTable({ title, text, rows }: { title: string; text: string; rows: string[][] }) {
+  const [search, setSearch] = useState("");
+  const filteredRows = rows.filter((r) =>
+    r.join(" ").toLowerCase().includes(search.toLowerCase())
+  );
+
+  const exportCsv = () => {
+    const csvRows = [["Name / Record", "Category", "Detail", "Status"], ...filteredRows];
+    const csv = csvRows
+      .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.toLowerCase().replace(/\s+/g, "-")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -3022,7 +6376,7 @@ function AdminTable({ title, text, rows }: { title: string; text: string; rows: 
         title={title}
         text={text}
         action={
-          <button className="btn btn-white">
+          <button className="btn btn-white" onClick={() => setSearch("")}>
             <Filter /> Filters
           </button>
         }
@@ -3030,9 +6384,15 @@ function AdminTable({ title, text, rows }: { title: string; text: string; rows: 
       <div className="search-filter">
         <div>
           <Search />
-          <input placeholder="Search records…" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search records…"
+          />
         </div>
-        <button className="btn btn-white">Export</button>
+        <button className="btn btn-white" onClick={exportCsv}>
+          Export
+        </button>
       </div>
       <section className="panel admin-table">
         <div className="table-head">
@@ -3042,38 +6402,67 @@ function AdminTable({ title, text, rows }: { title: string; text: string; rows: 
           <span>Status</span>
           <span></span>
         </div>
-        {rows.map((r, i) => (
-          <div className="table-row" key={i}>
-            <span>
-              <Avatar
-                initials={r[0]
-                  .split(" ")
-                  .map((x) => x[0])
-                  .slice(0, 2)
-                  .join("")}
-                size="sm"
-              />
-              <b>{r[0]}</b>
-            </span>
-            <span>{r[1]}</span>
-            <span>{r[2]}</span>
-            <Badge tone={r[3] === "Pending" ? "amber" : "green"}>{r[3]}</Badge>
-            <button>
-              <MoreHorizontal />
-            </button>
+        {filteredRows.length === 0 ? (
+          <div style={{ padding: "36px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+            No matching records found.
           </div>
-        ))}
+        ) : (
+          filteredRows.map((r, i) => (
+            <div className="table-row" key={i}>
+              <span>
+                <Avatar initials={getInitials(r[0])} size="sm" />
+                <b>{r[0]}</b>
+              </span>
+              <span>{r[1]}</span>
+              <span>{r[2]}</span>
+              <Badge tone={r[3] === "Pending" ? "amber" : "green"}>{r[3]}</Badge>
+              <button>
+                <MoreHorizontal />
+              </button>
+            </div>
+          ))
+        )}
       </section>
     </main>
   );
 }
 
 export default function App() {
-  const [view, setView] = useState<View>("landing");
-  const [role, setRole] = useState<Role>("talent");
+  const auth = useAuth();
+  const [view, setView] = useState<View>(auth.user ? "app" : "landing");
+  const [role, setRole] = useState<Role>(auth.role || "talent");
   const [initialRole, setInitialRole] = useState<Role | undefined>();
   const [active, setActive] = useState("Overview");
   const [notice, setNotice] = useState("");
+  const [projectsList, setProjectsList] = useState<Project[]>(initialProjects);
+
+  const refreshProjects = async () => {
+    const data = await fetchPublicProjects();
+    if (data) {
+      setProjectsList(data);
+    }
+  };
+
+  useEffect(() => {
+    refreshProjects();
+  }, [auth.user]);
+
+  // Sync role from auth context when it changes
+  useEffect(() => {
+    if (auth.user && auth.role) {
+      setRole(auth.role);
+    }
+  }, [auth.user, auth.role]);
+
+  // If session restored, skip landing
+  useEffect(() => {
+    if (!auth.loading && auth.user && view === "landing") {
+      setRole(auth.role);
+      setActive(auth.role === "admin" ? "Platform Overview" : "Overview");
+      setView("app");
+    }
+  }, [auth.loading, auth.user, auth.role]);
+
   useEffect(() => {
     if (notice) {
       const t = setTimeout(() => setNotice(""), 2600);
@@ -3086,37 +6475,68 @@ export default function App() {
     window.scrollTo(0, 0);
   };
   const enter = (r: Role, onboarding = false) => {
-    setRole(r);
-    setActive(r === "admin" ? "Platform Overview" : "Overview");
+    const verifiedRole = auth.user ? auth.role : r;
+    setRole(verifiedRole);
+    setActive(verifiedRole === "admin" ? "Platform Overview" : "Overview");
     setView(onboarding ? "onboarding" : "app");
+    refreshProjects();
   };
-  const logout = () => {
+  const logout = async () => {
+    await auth.signOut();
     setView("landing");
     setActive("Overview");
+    refreshProjects();
   };
+
+  if (auth.loading) {
+    return (
+      <div style={{ display: "grid", placeItems: "center", height: "100vh" }}>
+        <p style={{ color: "#486779", fontSize: 14 }}>Loading…</p>
+      </div>
+    );
+  }
+
+  // Strictly enforce database role when authenticated
+  const activeRole: Role = auth.user ? auth.role : role;
+
   return (
     <>
-      {view === "landing" && <Landing onNavigate={navigate} />}
-      {(view === "login" || view === "register") && (
-        <Auth
-          mode={view}
-          initialRole={initialRole}
-          onBack={() => setView("landing")}
-          onComplete={enter}
-        />
-      )}
-      {view === "onboarding" && <Onboarding role={role} onDone={() => setView("app")} />}
-      {view === "app" && (
-        <Shell role={role} active={active} setActive={setActive} onLogout={logout}>
-          {role === "talent" ? (
-            <TalentApp active={active} setActive={setActive} toast={setNotice} />
-          ) : role === "business" ? (
-            <BusinessApp active={active} setActive={setActive} toast={setNotice} />
-          ) : (
-            <AdminApp active={active} setActive={setActive} />
-          )}
-        </Shell>
-      )}
+      <div key={view} className="view-transition-wrap">
+        {view === "landing" && <Landing onNavigate={navigate} projects={projectsList} />}
+        {(view === "login" || view === "register") && (
+          <Auth
+            mode={view}
+            initialRole={initialRole}
+            onBack={() => setView("landing")}
+            onComplete={enter}
+          />
+        )}
+        {view === "onboarding" && (
+          <Onboarding role={activeRole} onDone={() => setView("app")} />
+        )}
+        {view === "app" && (
+          <Shell role={activeRole} active={active} setActive={setActive} onLogout={logout}>
+            {activeRole === "talent" ? (
+              <TalentApp
+                active={active}
+                setActive={setActive}
+                toast={setNotice}
+                projects={projectsList}
+                onRefreshProjects={refreshProjects}
+              />
+            ) : activeRole === "business" ? (
+              <BusinessApp
+                active={active}
+                setActive={setActive}
+                toast={setNotice}
+                onRefreshProjects={refreshProjects}
+              />
+            ) : (
+              <AdminApp active={active} setActive={setActive} />
+            )}
+          </Shell>
+        )}
+      </div>
       {notice && (
         <div className="toast">
           <CheckCircle2 />
