@@ -1,62 +1,97 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUser } from "@/lib/server/auth";
+import { NextRequest } from "next/server";
+import { requireAuth } from "@/lib/server/auth";
 import { createServerAdminClient } from "@/lib/supabase/server";
+import { validateEnum, jsonResponse, errorResponse } from "@/lib/server/security";
+import { logAuditEvent } from "@/lib/server/audit";
 
 const BUCKET_NAME = "gawa-avatars-banners";
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+
+/**
+ * Validates file buffer against known image magic bytes.
+ */
+function validateImageMagicBytes(buffer: Buffer): { valid: boolean; ext: string } {
+  if (buffer.length < 12) return { valid: false, ext: "" };
+
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return { valid: true, ext: "jpg" };
+  }
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return { valid: true, ext: "png" };
+  }
+
+  // WebP: RIFF .... WEBP
+  const riff = buffer.toString("ascii", 0, 4);
+  const webp = buffer.toString("ascii", 8, 12);
+  if (riff === "RIFF" && webp === "WEBP") {
+    return { valid: true, ext: "webp" };
+  }
+
+  return { valid: false, ext: "" };
+}
 
 export async function POST(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "sensitive");
+    if (authErr || !caller) return authErr!;
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
-    const kind = (formData.get("kind") as string) || "avatar";
+    const rawKind = (formData.get("kind") as string) || "avatar";
+
+    const kind = validateEnum(rawKind, ["avatar", "banner"] as const);
+    if (!kind) {
+      return errorResponse("Invalid media kind", 400);
+    }
 
     if (!file) {
-      return NextResponse.json({ error: "No image file provided" }, { status: 400 });
+      return errorResponse("No image file provided", 400);
     }
 
-    if (!["avatar", "banner"].includes(kind)) {
-      return NextResponse.json({ error: "Invalid media kind" }, { status: 400 });
+    if (file.size > MAX_FILE_SIZE) {
+      return errorResponse("Image size must be smaller than 5 MB", 400);
     }
 
-    const allowedTypes = ["image/jpeg", "image/png", "image/webp", "image/gif"];
-    if (!allowedTypes.includes(file.type)) {
-      return NextResponse.json(
-        { error: "Please upload a valid JPEG, PNG, WebP, or GIF image." },
-        { status: 400 }
-      );
-    }
+    const arrayBuffer = await file.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
 
-    if (file.size > 10 * 1024 * 1024) {
-      return NextResponse.json(
-        { error: "Image must be smaller than 10 MB." },
-        { status: 400 }
+    // Deep inspection: verify actual magic bytes, not just client header
+    const { valid, ext } = validateImageMagicBytes(buffer);
+    if (!valid) {
+      return errorResponse(
+        "File is not a valid JPEG, PNG, or WebP image",
+        400
       );
     }
 
     const supabase = createServerAdminClient();
-    const ext = file.name.split(".").pop()?.toLowerCase() || "png";
-    const storagePath = `${caller.id}/${kind}-${Date.now()}.${ext}`;
-    const arrayBuffer = await file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    // Cryptographically secure storage path isolated by auth user UUID
+    const randomSuffix = crypto.randomUUID();
+    const storagePath = `${caller.id}/${kind}-${Date.now()}-${randomSuffix}.${ext}`;
+    const mimeType = ext === "jpg" ? "image/jpeg" : ext === "png" ? "image/png" : "image/webp";
 
     const { error: uploadErr } = await supabase.storage
       .from(BUCKET_NAME)
       .upload(storagePath, buffer, {
-        contentType: file.type,
+        contentType: mimeType,
         upsert: true,
       });
 
     if (uploadErr) {
-      console.error("Storage upload error:", uploadErr);
-      return NextResponse.json(
-        { error: uploadErr.message || "Failed to upload image" },
-        { status: 500 }
-      );
+      console.error("[Storage Upload Error]:", uploadErr);
+      return errorResponse("Failed to upload image", 500);
     }
 
     const {
@@ -82,29 +117,38 @@ export async function POST(req: NextRequest) {
         .eq("id", caller.id);
     }
 
-    return NextResponse.json({
+    await logAuditEvent({
+      actorId: caller.id,
+      action: `profile.upload_${kind}`,
+      entityTable: "account_profiles",
+      entityId: caller.id,
+      details: { storagePath, publicUrl },
+    });
+
+    return jsonResponse({
       success: true,
       kind,
       url: publicUrl,
       path: storagePath,
     });
   } catch (err: any) {
-    console.error("Error in POST /api/profile/media:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[POST /api/profile/media error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const { caller, error: authErr } = await requireAuth(req, "write");
+    if (authErr || !caller) return authErr!;
+
+    const body = await req.json();
+    const kind = validateEnum(body.kind, ["avatar", "banner"] as const);
+
+    if (!kind) {
+      return errorResponse("Valid kind ('avatar' or 'banner') is required", 400);
     }
 
-    const { kind } = await req.json();
     const supabase = createServerAdminClient();
 
     if (kind === "avatar") {
@@ -119,18 +163,23 @@ export async function DELETE(req: NextRequest) {
           .update({ logo_path: null })
           .eq("id", caller.businessId);
       }
-    } else if (kind === "banner") {
+    } else {
       await supabase
         .from("account_profiles")
         .update({ banner_path: null })
         .eq("id", caller.id);
     }
 
-    return NextResponse.json({ success: true });
+    await logAuditEvent({
+      actorId: caller.id,
+      action: `profile.delete_${kind}`,
+      entityTable: "account_profiles",
+      entityId: caller.id,
+    });
+
+    return jsonResponse({ success: true });
   } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[DELETE /api/profile/media error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }

@@ -1,18 +1,26 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUser } from "@/lib/server/auth";
+import { NextRequest } from "next/server";
+import { requireAuth } from "@/lib/server/auth";
 import { createServerAdminClient } from "@/lib/supabase/server";
+import {
+  isValidUUID,
+  sanitizeString,
+  sanitizeMultiline,
+  validateEnum,
+  jsonResponse,
+  errorResponse,
+} from "@/lib/server/security";
+import { logAuditEvent } from "@/lib/server/audit";
 
 export async function GET(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "read");
+    if (authErr || !caller) return authErr!;
 
     const supabase = createServerAdminClient();
+    const isAdmin = caller.roles.includes("admin");
 
-    // Fetch contracts where user is either the talent or the business owner of the project
-    const { data: allContracts, error } = await supabase
+    // Base query with relational joins
+    let query = supabase
       .from("project_contracts")
       .select(`
         id,
@@ -26,7 +34,7 @@ export async function GET(req: NextRequest) {
         due_at,
         completed_at,
         created_at,
-        project:project_listings(
+        project:project_listings!inner(
           id,
           title,
           description,
@@ -84,49 +92,47 @@ export async function GET(req: NextRequest) {
       `)
       .order("created_at", { ascending: false });
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    // Database-level isolation: never query all contracts for non-admins
+    if (!isAdmin) {
+      if (caller.businessId) {
+        // Talent participant OR business owner
+        query = query.or(
+          `talent_id.eq.${caller.id},project.business_id.eq.${caller.businessId}`
+        );
+      } else {
+        // Talent only
+        query = query.eq("talent_id", caller.id);
+      }
     }
 
-    const isAdmin = caller.roles.includes("admin");
-    const filtered = (allContracts || []).filter((c: any) => {
-      if (isAdmin) return true;
-      if (c.talent_id === caller.id) return true;
-      const bOwner = c.project?.business?.owner_id;
-      const bId = c.project?.business_id;
-      return bOwner === caller.id || (caller.businessId && bId === caller.businessId);
-    });
+    const { data: contracts, error } = await query;
 
-    return NextResponse.json({ contracts: filtered });
+    if (error) {
+      return errorResponse(error.message, 500);
+    }
+
+    return jsonResponse({ contracts: contracts || [] });
   } catch (err: any) {
-    console.error("Error in GET /api/contracts:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[GET /api/contracts error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "write");
+    if (authErr || !caller) return authErr!;
 
     const body = await req.json();
     const { action, contract_id } = body;
 
-    if (!action || !contract_id) {
-      return NextResponse.json(
-        { error: "action and contract_id are required" },
-        { status: 400 }
-      );
+    if (!isValidUUID(contract_id)) {
+      return errorResponse("Valid contract_id is required", 400);
     }
 
     const supabase = createServerAdminClient();
 
-    // Verify caller is participant in contract
+    // Verify caller is a verified participant in this contract
     const { data: contract, error: cErr } = await supabase
       .from("project_contracts")
       .select(`
@@ -134,7 +140,6 @@ export async function POST(req: NextRequest) {
         project_id,
         talent_id,
         agreed_amount,
-        platform_fee_rate,
         status,
         project:project_listings(id, title, business_id, business:business_profiles(owner_id))
       `)
@@ -142,7 +147,7 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (cErr || !contract) {
-      return NextResponse.json({ error: "Contract not found" }, { status: 404 });
+      return errorResponse("Contract not found", 404);
     }
 
     const proj = contract.project as any;
@@ -150,39 +155,62 @@ export async function POST(req: NextRequest) {
     const isBusinessOwner =
       proj?.business?.owner_id === caller.id ||
       (caller.businessId && proj?.business_id === caller.businessId);
+    const isAdmin = caller.roles.includes("admin");
 
-    if (!isTalent && !isBusinessOwner && !caller.roles.includes("admin")) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!isTalent && !isBusinessOwner && !isAdmin) {
+      return errorResponse("Forbidden: You are not a participant in this contract", 403);
     }
 
+    // 1. ADD MILESTONE
     if (action === "add_milestone") {
-      const { title, description } = body;
-      if (!title?.trim()) {
-        return NextResponse.json({ error: "Milestone title required" }, { status: 400 });
+      const title = sanitizeString(body.title, 120);
+      const description = sanitizeMultiline(body.description, 1000);
+
+      if (!title || title.length < 3) {
+        return errorResponse("Milestone title must be at least 3 characters", 400);
       }
+
       const { data: milestone, error } = await supabase
         .from("workspace_milestones")
         .insert({
           contract_id,
-          title: title.trim(),
-          description: description?.trim() || null,
+          title,
+          description: description || null,
           status: "in_progress",
         })
-        .select("*")
+        .select()
         .single();
 
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true, milestone });
+      if (error) return errorResponse(error.message, 500);
+      return jsonResponse({ success: true, milestone }, 201);
     }
 
+    // 2. ADD TASK
     if (action === "add_task") {
-      let { milestone_id, title } = body;
-      if (!title?.trim()) {
-        return NextResponse.json({ error: "Task title required" }, { status: 400 });
+      let { milestone_id } = body;
+      const title = sanitizeString(body.title, 150);
+
+      if (!title) {
+        return errorResponse("Task title is required", 400);
       }
 
-      // If no milestone exists yet for this contract, auto-create default milestone
-      if (!milestone_id) {
+      // If milestone_id provided, verify it belongs to this contract
+      if (milestone_id) {
+        if (!isValidUUID(milestone_id)) {
+          return errorResponse("Invalid milestone_id", 400);
+        }
+        const { data: validMs } = await supabase
+          .from("workspace_milestones")
+          .select("id")
+          .eq("id", milestone_id)
+          .eq("contract_id", contract_id)
+          .single();
+
+        if (!validMs) {
+          return errorResponse("Milestone does not belong to this contract", 400);
+        }
+      } else {
+        // Auto-assign or auto-create first milestone
         const { data: existingMs } = await supabase
           .from("workspace_milestones")
           .select("id")
@@ -204,11 +232,9 @@ export async function POST(req: NextRequest) {
             })
             .select("id")
             .single();
+
           if (msErr || !createdMs) {
-            return NextResponse.json(
-              { error: msErr?.message || "Failed to create milestone" },
-              { status: 500 }
-            );
+            return errorResponse(msErr?.message || "Failed to create milestone", 500);
           }
           milestone_id = createdMs.id;
         }
@@ -218,75 +244,147 @@ export async function POST(req: NextRequest) {
         .from("workspace_tasks")
         .insert({
           milestone_id,
-          title: title.trim(),
+          title,
           assigned_to: caller.id,
           is_done: false,
         })
-        .select("*")
+        .select()
         .single();
 
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true, task });
+      if (error) return errorResponse(error.message, 500);
+      return jsonResponse({ success: true, task }, 201);
     }
 
+    // 3. TOGGLE TASK
     if (action === "toggle_task") {
       const { task_id, is_done } = body;
+      if (!isValidUUID(task_id)) {
+        return errorResponse("Valid task_id is required", 400);
+      }
+
+      // Verify task belongs to a milestone in this contract
+      const { data: taskRecord } = await supabase
+        .from("workspace_tasks")
+        .select("id, milestone:workspace_milestones(contract_id)")
+        .eq("id", task_id)
+        .single();
+
+      if (!taskRecord || (taskRecord.milestone as any)?.contract_id !== contract_id) {
+        return errorResponse("Task not found in this contract", 404);
+      }
+
       const { data: task, error } = await supabase
         .from("workspace_tasks")
         .update({ is_done: Boolean(is_done) })
         .eq("id", task_id)
-        .select("*")
+        .select()
         .single();
 
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-      return NextResponse.json({ success: true, task });
+      if (error) return errorResponse(error.message, 500);
+      return jsonResponse({ success: true, task });
     }
 
+    // 4. SUBMIT DELIVERABLE (Assigned Talent only)
     if (action === "submit_deliverable") {
-      const { title, notes, external_url } = body;
-      if (!title?.trim()) {
-        return NextResponse.json(
-          { error: "Deliverable title is required" },
-          { status: 400 }
-        );
+      if (!isTalent && !isAdmin) {
+        return errorResponse("Forbidden: Only assigned talent can submit deliverables", 403);
       }
+
+      const title = sanitizeString(body.title, 150);
+      const notes = sanitizeMultiline(body.notes, 2000);
+      const externalUrl = sanitizeString(body.external_url, 500);
+
+      if (!title) {
+        return errorResponse("Deliverable title is required", 400);
+      }
+
       const { data: deliverable, error } = await supabase
         .from("workspace_deliverables")
         .insert({
           contract_id,
           submitted_by: caller.id,
-          title: title.trim(),
-          notes: notes?.trim() || null,
-          external_url: external_url?.trim() || null,
+          title,
+          notes: notes || null,
+          external_url: externalUrl || null,
           status: "submitted",
         })
-        .select("*")
+        .select()
         .single();
 
-      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      if (error) return errorResponse(error.message, 500);
 
+      // Notify business owner
       if (proj?.business?.owner_id) {
         await supabase.from("notification_inbox").insert({
           user_id: proj.business.owner_id,
           kind: "deliverable_submitted",
           title: "Deliverable Submitted",
-          body: `A new deliverable "${title.trim()}" was submitted for "${proj.title}".`,
+          body: `A new deliverable "${title}" was submitted for "${proj.title}".`,
           project_id: contract.project_id,
         });
       }
 
-      return NextResponse.json({ success: true, deliverable });
+      return jsonResponse({ success: true, deliverable }, 201);
     }
 
+    // 5. REVIEW DELIVERABLE (Business Owner only)
+    if (action === "review_deliverable") {
+      if (!isBusinessOwner && !isAdmin) {
+        return errorResponse("Forbidden: Only business owner can review deliverables", 403);
+      }
+
+      const { deliverable_id, status: reviewStatus, review_notes } = body;
+      if (!isValidUUID(deliverable_id)) {
+        return errorResponse("Valid deliverable_id is required", 400);
+      }
+
+      const validatedStatus = validateEnum(
+        reviewStatus,
+        ["approved", "revision_requested"] as const
+      );
+      if (!validatedStatus) {
+        return errorResponse("Invalid review status", 400);
+      }
+
+      const cleanReviewNotes = sanitizeMultiline(review_notes, 1000);
+
+      const { data: deliverable, error } = await supabase
+        .from("workspace_deliverables")
+        .update({
+          status: validatedStatus,
+          reviewed_by: caller.id,
+          reviewed_at: new Date().toISOString(),
+          review_notes: cleanReviewNotes || null,
+        })
+        .eq("id", deliverable_id)
+        .eq("contract_id", contract_id)
+        .select()
+        .single();
+
+      if (error || !deliverable) {
+        return errorResponse(error?.message || "Deliverable not found", 404);
+      }
+
+      // Notify talent
+      await supabase.from("notification_inbox").insert({
+        user_id: contract.talent_id,
+        kind: `deliverable_${validatedStatus}`,
+        title: `Deliverable ${validatedStatus === "approved" ? "Approved" : "Revision Requested"}`,
+        body: `Your deliverable "${deliverable.title}" was reviewed.`,
+        project_id: contract.project_id,
+      });
+
+      return jsonResponse({ success: true, deliverable });
+    }
+
+    // 6. COMPLETE CONTRACT (Business Owner or Admin only)
     if (action === "complete_contract") {
-      if (!isBusinessOwner && !caller.roles.includes("admin")) {
-        return NextResponse.json(
-          { error: "Only the business owner can mark a contract completed" },
-          { status: 403 }
-        );
+      if (!isBusinessOwner && !isAdmin) {
+        return errorResponse("Only the business owner can complete a contract", 403);
       }
 
       const now = new Date().toISOString();
+
       await supabase
         .from("project_contracts")
         .update({ status: "completed", completed_at: now })
@@ -306,19 +404,24 @@ export async function POST(req: NextRequest) {
         user_id: contract.talent_id,
         kind: "contract_completed",
         title: "Project Completed!",
-        body: `"${proj?.title || "Your project"}" has been marked completed.`,
+        body: `"${proj?.title || "Your project"}" has been marked completed. Thank you for your work!`,
         project_id: contract.project_id,
       });
 
-      return NextResponse.json({ success: true });
+      await logAuditEvent({
+        actorId: caller.id,
+        action: "contract.complete",
+        entityTable: "project_contracts",
+        entityId: contract_id,
+        details: { project_id: contract.project_id },
+      });
+
+      return jsonResponse({ success: true, message: "Contract completed successfully" });
     }
 
-    return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+    return errorResponse("Unknown action", 400);
   } catch (err: any) {
-    console.error("Error in POST /api/contracts:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[POST /api/contracts error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }

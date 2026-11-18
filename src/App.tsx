@@ -74,6 +74,13 @@ import {
   fetchConversations,
   fetchMessagesData,
   fetchOverviewData,
+  fetchAdminData,
+  fundContractEscrow,
+  releaseContractEscrow,
+  deletePortfolioItem,
+  moderateListingAction,
+  toggleUserStatusAction,
+  resolveReportAction,
   formatRelativeTime,
   getInitials,
 } from "@/lib/api/projects";
@@ -3876,6 +3883,17 @@ function Portfolio({
     }
   };
 
+  const handleDeleteWork = async (itemId: string) => {
+    if (!confirm("Are you sure you want to remove this portfolio item?")) return;
+    const res = await deletePortfolioItem(itemId);
+    if (res.success) {
+      toast("Portfolio item removed");
+      await onRefresh?.();
+    } else {
+      toast(res.error || "Failed to remove portfolio item");
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -4007,9 +4025,28 @@ function Portfolio({
                     background: "#f8fafc",
                   }}
                 >
-                  <b style={{ display: "block", color: "#102a43", marginBottom: 4 }}>
-                    {item.title}
-                  </b>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <b style={{ display: "block", color: "#102a43", marginBottom: 4 }}>
+                      {item.title}
+                    </b>
+                    <button
+                      onClick={() => handleDeleteWork(item.id)}
+                      title="Remove work sample"
+                      style={{
+                        background: "none",
+                        border: "none",
+                        color: "#9fb3c8",
+                        cursor: "pointer",
+                        padding: 4,
+                        display: "inline-flex",
+                        alignItems: "center",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = "#e12d39")}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = "#9fb3c8")}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                   {item.description && (
                     <p style={{ fontSize: 13, color: "#486581", marginBottom: 6 }}>
                       {item.description}
@@ -5411,6 +5448,28 @@ function Payments({
     toast?.("Transaction report downloaded");
   };
 
+  const handleFund = async (contractId: string, amount: number) => {
+    const res = await fundContractEscrow(contractId, amount);
+    if (res.success) {
+      toast?.("Escrow deposited successfully");
+      const updated = await fetchContracts();
+      setContracts(updated);
+    } else {
+      toast?.(res.error || "Failed to fund escrow");
+    }
+  };
+
+  const handleRelease = async (contractId: string, amount: number) => {
+    const res = await releaseContractEscrow(contractId, amount);
+    if (res.success) {
+      toast?.("Payment released to talent successfully");
+      const updated = await fetchContracts();
+      setContracts(updated);
+    } else {
+      toast?.(res.error || "Failed to release payment");
+    }
+  };
+
   return (
     <main className="page">
       <PageTitle
@@ -5448,6 +5507,61 @@ function Payments({
           delta="5% transaction fee"
         />
       </div>
+      <section className="panel data-panel" style={{ marginBottom: 24 }}>
+        <div className="panel-title">
+          <b>Project Escrow Accounts</b>
+          <span style={{ fontSize: 13, color: "#627d98" }}>Secure milestone payments</span>
+        </div>
+        {contracts.length > 0 ? (
+          contracts.map((c) => {
+            const agreed = Number(c.agreed_amount || 0);
+            const funded = Number(c.escrow?.funded_amount || 0);
+            const releasedAmt = Number(c.escrow?.released_amount || 0);
+            const needsFunding = funded < agreed;
+            const canRelease = funded > releasedAmt;
+
+            return (
+              <div className="data-row" key={c.id} style={{ alignItems: "center" }}>
+                <div>
+                  <b>{c.project?.title || "Contract"}</b>
+                  <span>{c.talent?.display_name || "Assigned Talent"}</span>
+                </div>
+                <div>
+                  <span style={{ fontSize: 12, color: "#627d98" }}>Agreed: {php(agreed)}</span>
+                  <div style={{ fontSize: 12, color: "#102a43" }}>
+                    Funded: <strong>{php(funded)}</strong> | Released: <strong>{php(releasedAmt)}</strong>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {needsFunding && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleFund(c.id, agreed - funded)}
+                    >
+                      Deposit {php(agreed - funded)}
+                    </button>
+                  )}
+                  {canRelease && (
+                    <button
+                      className="btn btn-outline btn-sm"
+                      onClick={() => handleRelease(c.id, funded - releasedAmt)}
+                    >
+                      Release {php(funded - releasedAmt)}
+                    </button>
+                  )}
+                  {!needsFunding && !canRelease && (
+                    <Badge tone="green">Fully Settled</Badge>
+                  )}
+                </div>
+              </div>
+            );
+          })
+        ) : (
+          <div style={{ padding: "32px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
+            No active project contracts. Escrow accounts will appear when talent proposals are accepted.
+          </div>
+        )}
+      </section>
       <section className="panel data-panel">
         <div className="panel-title">
           <b>Transaction history</b>

@@ -1,17 +1,22 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUser } from "@/lib/server/auth";
+import { NextRequest } from "next/server";
+import { requireAuth } from "@/lib/server/auth";
 import { createServerAdminClient } from "@/lib/supabase/server";
+import {
+  isValidUUID,
+  sanitizeString,
+  sanitizeMultiline,
+  jsonResponse,
+  errorResponse,
+} from "@/lib/server/security";
 
 export async function GET(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "read");
+    if (authErr || !caller) return authErr!;
 
     const supabase = createServerAdminClient();
 
-    // Fetch available contacts (other users) so user can easily start a new conversation
+    // 1. Fetch available contacts (public display info only - no emails or phone numbers)
     const [
       { data: allProfiles },
       { data: allRoles },
@@ -20,7 +25,9 @@ export async function GET(req: NextRequest) {
       supabase
         .from("account_profiles")
         .select("id, display_name, avatar_path, avatar_color")
-        .neq("id", caller.id),
+        .neq("id", caller.id)
+        .eq("profile_visible", true)
+        .limit(100),
       supabase.from("account_roles").select("user_id, role"),
       supabase.from("business_profiles").select("owner_id, name"),
     ]);
@@ -48,18 +55,19 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    // Find conversations where caller is a participant
+    // 2. Fetch conversations where caller is a registered participant
     const { data: myMemberships, error: memErr } = await supabase
       .from("messaging_participants")
       .select("conversation_id, last_read_at")
       .eq("user_id", caller.id);
 
     if (memErr || !myMemberships || myMemberships.length === 0) {
-      return NextResponse.json({ conversations: [], contacts });
+      return jsonResponse({ conversations: [], contacts });
     }
 
     const convIds = myMemberships.map((m) => m.conversation_id);
 
+    // 3. Fetch conversation details, participants, and non-deleted messages
     const [
       { data: convs },
       { data: participants },
@@ -113,37 +121,42 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    return NextResponse.json({ conversations: enriched, contacts });
+    return jsonResponse({ conversations: enriched, contacts });
   } catch (err: any) {
-    console.error("Error in GET /api/messages:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[GET /api/messages error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "write");
+    if (authErr || !caller) return authErr!;
 
     const body = await req.json();
-    const { action = "send", conversation_id, recipient_id, subject, message, project_id } = body;
-
+    const action = body.action || "send";
     const supabase = createServerAdminClient();
 
+    // 1. START NEW CONVERSATION
     if (action === "start") {
-      if (!recipient_id || recipient_id === caller.id) {
-        return NextResponse.json(
-          { error: "Valid recipient_id is required" },
-          { status: 400 }
-        );
+      const { recipient_id, subject, message, project_id } = body;
+
+      if (!isValidUUID(recipient_id) || recipient_id === caller.id) {
+        return errorResponse("Valid recipient_id is required and cannot be self", 400);
       }
 
-      // Check if a conversation already exists between caller and recipient
+      // Check recipient exists and is active
+      const { data: recipientProfile } = await supabase
+        .from("account_profiles")
+        .select("id")
+        .eq("id", recipient_id)
+        .single();
+
+      if (!recipientProfile) {
+        return errorResponse("Recipient does not exist", 404);
+      }
+
+      // Check for existing conversation between these two users
       const { data: callerConvs } = await supabase
         .from("messaging_participants")
         .select("conversation_id")
@@ -167,20 +180,20 @@ export async function POST(req: NextRequest) {
       }
 
       if (!existingConvId) {
+        const cleanSubject = sanitizeString(subject, 100) || "Project Collaboration";
+        const cleanProjectId = isValidUUID(project_id) ? project_id : null;
+
         const { data: createdConv, error: cErr } = await supabase
           .from("messaging_conversations")
           .insert({
-            project_id: project_id || null,
-            subject: subject || "Project Collaboration",
+            project_id: cleanProjectId,
+            subject: cleanSubject,
           })
           .select("id")
           .single();
 
         if (cErr || !createdConv) {
-          return NextResponse.json(
-            { error: cErr?.message || "Failed to start conversation" },
-            { status: 500 }
-          );
+          return errorResponse(cErr?.message || "Failed to create conversation", 500);
         }
 
         existingConvId = createdConv.id;
@@ -198,42 +211,48 @@ export async function POST(req: NextRequest) {
         ]);
       }
 
-      if (message?.trim()) {
+      const cleanMessage = sanitizeMultiline(message, 2000);
+      if (cleanMessage) {
         await supabase.from("messaging_messages").insert({
           conversation_id: existingConvId,
           sender_id: caller.id,
-          body: message.trim(),
+          body: cleanMessage,
         });
 
         await supabase.from("notification_inbox").insert({
           user_id: recipient_id,
           kind: "message_received",
           title: "New Message",
-          body: message.trim().slice(0, 120),
+          body: cleanMessage.slice(0, 100),
           conversation_id: existingConvId,
         });
       }
 
-      return NextResponse.json({ success: true, conversation_id: existingConvId });
+      return jsonResponse({ success: true, conversation_id: existingConvId }, 201);
     }
 
-    // Send message in existing conversation
-    if (!conversation_id || !message?.trim()) {
-      return NextResponse.json(
-        { error: "conversation_id and message are required" },
-        { status: 400 }
-      );
+    // 2. SEND MESSAGE TO EXISTING CONVERSATION
+    const { conversation_id, message } = body;
+
+    if (!isValidUUID(conversation_id)) {
+      return errorResponse("Valid conversation_id is required", 400);
     }
 
-    const { data: member } = await supabase
+    const cleanMessage = sanitizeMultiline(message, 2000);
+    if (!cleanMessage) {
+      return errorResponse("Message content cannot be empty", 400);
+    }
+
+    // Strict membership verification
+    const { data: membership } = await supabase
       .from("messaging_participants")
       .select("conversation_id")
       .eq("conversation_id", conversation_id)
       .eq("user_id", caller.id)
       .maybeSingle();
 
-    if (!member) {
-      return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    if (!membership) {
+      return errorResponse("Forbidden: You are not a participant in this conversation", 403);
     }
 
     const { data: msg, error: mErr } = await supabase
@@ -241,30 +260,43 @@ export async function POST(req: NextRequest) {
       .insert({
         conversation_id,
         sender_id: caller.id,
-        body: message.trim(),
+        body: cleanMessage,
       })
       .select("id, conversation_id, sender_id, body, created_at")
       .single();
 
     if (mErr || !msg) {
-      return NextResponse.json(
-        { error: mErr?.message || "Failed to send message" },
-        { status: 500 }
-      );
+      return errorResponse(mErr?.message || "Failed to send message", 500);
     }
 
+    // Update caller's last_read_at
     await supabase
       .from("messaging_participants")
       .update({ last_read_at: new Date().toISOString() })
       .eq("conversation_id", conversation_id)
       .eq("user_id", caller.id);
 
-    return NextResponse.json({ success: true, message: msg });
+    // Notify other participants
+    const { data: others } = await supabase
+      .from("messaging_participants")
+      .select("user_id")
+      .eq("conversation_id", conversation_id)
+      .neq("user_id", caller.id);
+
+    if (others && others.length > 0) {
+      const notifs = others.map((o) => ({
+        user_id: o.user_id,
+        kind: "message_received",
+        title: `Message from ${caller.displayName || "Collaborator"}`,
+        body: cleanMessage.slice(0, 100),
+        conversation_id,
+      }));
+      await supabase.from("notification_inbox").insert(notifs);
+    }
+
+    return jsonResponse({ success: true, message: msg }, 201);
   } catch (err: any) {
-    console.error("Error in POST /api/messages:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[POST /api/messages error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }

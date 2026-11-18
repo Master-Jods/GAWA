@@ -1,29 +1,19 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUser } from "@/lib/server/auth";
+import { NextRequest } from "next/server";
+import { requireBusiness } from "@/lib/server/auth";
 import { createServerAdminClient } from "@/lib/supabase/server";
+import { isValidUUID, jsonResponse, errorResponse } from "@/lib/server/security";
+import { logAuditEvent } from "@/lib/server/audit";
 
 export async function POST(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    if (!caller.roles.includes("business") || !caller.businessId) {
-      return NextResponse.json(
-        { error: "Forbidden: Business role required to hire talent" },
-        { status: 403 }
-      );
-    }
+    const { caller, error: authErr } = await requireBusiness(req, "sensitive");
+    if (authErr || !caller || !caller.businessId) return authErr!;
 
     const body = await req.json();
     const { application_id, close_remaining = false } = body;
 
-    if (!application_id) {
-      return NextResponse.json(
-        { error: "application_id is required" },
-        { status: 400 }
-      );
+    if (!isValidUUID(application_id)) {
+      return errorResponse("Valid application_id is required", 400);
     }
 
     const supabase = createServerAdminClient();
@@ -41,35 +31,30 @@ export async function POST(req: NextRequest) {
           id,
           business_id,
           budget,
-          title
+          title,
+          status
         )
       `)
       .eq("id", application_id)
       .single();
 
     if (appErr || !application) {
-      return NextResponse.json(
-        { error: "Application not found" },
-        { status: 404 }
-      );
+      return errorResponse("Application not found", 404);
     }
 
     const project = application.project as any;
     if (project.business_id !== caller.businessId) {
-      return NextResponse.json(
-        { error: "Forbidden: You do not own this project listing" },
-        { status: 403 }
-      );
+      return errorResponse("Forbidden: You do not own this project listing", 403);
     }
 
     if (application.status === "accepted" || application.status === "withdrawn") {
-      return NextResponse.json(
-        { error: `Cannot hire application with status '${application.status}'` },
-        { status: 400 }
+      return errorResponse(
+        `Cannot hire proposal with status '${application.status}'`,
+        400
       );
     }
 
-    // 2. Fetch platform fee rate
+    // 2. Fetch server-controlled platform fee rate
     const { data: feeSetting } = await supabase
       .from("platform_settings")
       .select("value")
@@ -95,10 +80,9 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (contractErr || !contract) {
-      console.error("Contract creation error:", contractErr);
-      return NextResponse.json(
-        { error: contractErr?.message || "Failed to create contract" },
-        { status: 500 }
+      return errorResponse(
+        contractErr?.message || "Failed to create contract",
+        500
       );
     }
 
@@ -124,7 +108,7 @@ export async function POST(req: NextRequest) {
         .in("status", ["submitted", "shortlisted", "interview"]);
     }
 
-    // Initialize escrow account for contract
+    // 7. Initialize escrow account record
     await supabase.from("billing_escrow_accounts").upsert({
       contract_id: contract.id,
       funded_amount: 0,
@@ -132,7 +116,7 @@ export async function POST(req: NextRequest) {
       refunded_amount: 0,
     });
 
-    // 7. Notify talent
+    // 8. In-app notification for talent
     await supabase.from("notification_inbox").insert({
       user_id: application.talent_id,
       kind: "application_accepted",
@@ -141,12 +125,12 @@ export async function POST(req: NextRequest) {
       project_id: application.project_id,
     });
 
-    // 8. Audit event
-    await supabase.from("admin_audit_events").insert({
-      actor_id: caller.id,
+    // 9. Security audit event
+    await logAuditEvent({
+      actorId: caller.id,
       action: "contract.create",
-      entity_table: "project_contracts",
-      entity_id: contract.id,
+      entityTable: "project_contracts",
+      entityId: contract.id,
       details: {
         project_id: application.project_id,
         talent_id: application.talent_id,
@@ -154,12 +138,9 @@ export async function POST(req: NextRequest) {
       },
     });
 
-    return NextResponse.json({ success: true, contract });
+    return jsonResponse({ success: true, contract }, 201);
   } catch (err: any) {
-    console.error("Unhandled error in POST /api/contracts/hire:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[POST /api/contracts/hire error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }

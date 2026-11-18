@@ -1,20 +1,31 @@
-import { NextRequest, NextResponse } from "next/server";
-import { getAuthenticatedUser } from "@/lib/server/auth";
+import { NextRequest } from "next/server";
+import { requireAuth, requireRole } from "@/lib/server/auth";
 import { createServerAdminClient } from "@/lib/supabase/server";
+import {
+  isValidUUID,
+  sanitizeMultiline,
+  clampNumber,
+  validateEnum,
+  jsonResponse,
+  errorResponse,
+} from "@/lib/server/security";
+import { logAuditEvent } from "@/lib/server/audit";
 
 export async function GET(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "read");
+    if (authErr || !caller) return authErr!;
 
     const supabase = createServerAdminClient();
     const { searchParams } = new URL(req.url);
     const scope = searchParams.get("scope");
 
-    // Business view: incoming applications across all projects owned by caller's business
-    if (scope === "business" && caller.businessId) {
+    // Business view: applications across projects owned by caller's business
+    if (scope === "business") {
+      if (!caller.businessId) {
+        return errorResponse("Business profile required", 403);
+      }
+
       const { data: apps, error } = await supabase
         .from("project_applications")
         .select(`
@@ -43,16 +54,15 @@ export async function GET(req: NextRequest) {
         .order("submitted_at", { ascending: false });
 
       if (error) {
-        return NextResponse.json({ error: error.message }, { status: 500 });
+        return errorResponse(error.message, 500);
       }
 
-      // Enrich with talent_profiles and talent_skills
       const talentIds = Array.from(
         new Set((apps || []).map((a: any) => a.talent_id))
       );
 
-      let talentProfileMap = new Map<string, any>();
-      let talentSkillsMap = new Map<string, string[]>();
+      const talentProfileMap = new Map<string, any>();
+      const talentSkillsMap = new Map<string, string[]>();
 
       if (talentIds.length > 0) {
         const [{ data: tProfiles }, { data: tSkills }] = await Promise.all([
@@ -88,15 +98,15 @@ export async function GET(req: NextRequest) {
             location: a.talent?.location || "",
             headline: tp?.headline || tp?.course || "Emerging Talent",
             school: tp?.school || "Verified Member",
-            skills: skills.length > 0 ? skills : ["UI/UX Design", "Collaboration"],
+            skills: skills.length > 0 ? skills : ["General Professional"],
           },
         };
       });
 
-      return NextResponse.json({ applications: enriched });
+      return jsonResponse({ applications: enriched });
     }
 
-    // Talent view: all applications submitted by caller
+    // Talent view: only caller's own applications
     const { data: apps, error } = await supabase
       .from("project_applications")
       .select(`
@@ -128,34 +138,177 @@ export async function GET(req: NextRequest) {
       .order("submitted_at", { ascending: false });
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      return errorResponse(error.message, 500);
     }
 
-    return NextResponse.json({ applications: apps || [] });
+    return jsonResponse({ applications: apps || [] });
   } catch (err: any) {
-    console.error("Unhandled error in GET /api/applications:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[GET /api/applications error]:", err);
+    return errorResponse("Internal server error", 500);
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { caller, error: authErr } = await requireRole(req, "talent", "write");
+    if (authErr || !caller) return authErr!;
+
+    const body = await req.json();
+    const { project_id, portfolio_item_ids = [] } = body;
+
+    if (!isValidUUID(project_id)) {
+      return errorResponse("Valid project ID is required", 400);
+    }
+
+    const proposal = sanitizeMultiline(body.proposal, 3000);
+    if (!proposal || proposal.length < 15) {
+      return errorResponse("Proposal must be at least 15 characters", 400);
+    }
+
+    const supabase = createServerAdminClient();
+
+    // 1. Verify project exists, is open, and not owned by applicant
+    const { data: project, error: projErr } = await supabase
+      .from("project_listings")
+      .select(`
+        id,
+        business_id,
+        budget,
+        status,
+        application_deadline,
+        business:business_profiles(owner_id)
+      `)
+      .eq("id", project_id)
+      .single();
+
+    if (projErr || !project) {
+      return errorResponse("Project not found", 404);
+    }
+
+    if (project.status !== "published" && project.status !== "active") {
+      return errorResponse("This project is not currently accepting applications", 400);
+    }
+
+    // Check deadline
+    if (project.application_deadline) {
+      const todayStr = new Date().toISOString().split("T")[0];
+      if (project.application_deadline < todayStr) {
+        return errorResponse("The application deadline for this project has passed", 400);
+      }
+    }
+
+    // Prevent business owner from applying to own project
+    const businessOwner = (project.business as any)?.owner_id;
+    if (businessOwner === caller.id) {
+      return errorResponse("You cannot apply to your own project", 400);
+    }
+
+    // Prevent duplicate applications
+    const { data: existingApp } = await supabase
+      .from("project_applications")
+      .select("id, status")
+      .eq("project_id", project_id)
+      .eq("talent_id", caller.id)
+      .maybeSingle();
+
+    if (existingApp) {
+      return errorResponse("You have already applied to this project listing", 409);
+    }
+
+    const proposedBudget = body.proposed_budget
+      ? clampNumber(body.proposed_budget, 100, 10000000, project.budget)
+      : project.budget;
+
+    // 2. Insert application record
+    const { data: application, error: appErr } = await supabase
+      .from("project_applications")
+      .insert({
+        project_id,
+        talent_id: caller.id,
+        proposal,
+        proposed_budget: proposedBudget,
+        status: "submitted",
+        submitted_at: new Date().toISOString(),
+      })
+      .select("id, project_id, talent_id, proposal, status, proposed_budget, submitted_at")
+      .single();
+
+    if (appErr || !application) {
+      return errorResponse(appErr?.message || "Failed to submit proposal", 500);
+    }
+
+    // 3. Attach only caller-owned portfolio items
+    if (Array.isArray(portfolio_item_ids) && portfolio_item_ids.length > 0) {
+      const validUuids = portfolio_item_ids.filter((id) => isValidUUID(id));
+      if (validUuids.length > 0) {
+        const { data: ownedItems } = await supabase
+          .from("portfolio_items")
+          .select("id")
+          .eq("talent_id", caller.id)
+          .in("id", validUuids);
+
+        const validIds = (ownedItems || []).map((i) => i.id);
+        if (validIds.length > 0) {
+          const portfolioInserts = validIds.map((pid) => ({
+            application_id: application.id,
+            portfolio_item_id: pid,
+          }));
+          await supabase
+            .from("project_application_portfolio")
+            .insert(portfolioInserts);
+        }
+      }
+    }
+
+    // 4. Notify business owner
+    if (businessOwner) {
+      await supabase.from("notification_inbox").insert({
+        user_id: businessOwner,
+        kind: "application_received",
+        title: "New Application Received",
+        body: `A talent submitted a proposal for your project listing.`,
+        project_id,
+      });
+    }
+
+    // 5. Audit log
+    await logAuditEvent({
+      actorId: caller.id,
+      action: "application.submit",
+      entityTable: "project_applications",
+      entityId: application.id,
+      details: {
+        project_id,
+        proposed_budget: proposedBudget,
+      },
+    });
+
+    return jsonResponse({ success: true, application }, 201);
+  } catch (err: any) {
+    console.error("[POST /api/applications error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }
 
 export async function PATCH(req: NextRequest) {
   try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+    const { caller, error: authErr } = await requireAuth(req, "write");
+    if (authErr || !caller) return authErr!;
 
     const body = await req.json();
     const { application_id, status: nextStatus } = body;
 
-    if (!application_id || !nextStatus) {
-      return NextResponse.json(
-        { error: "application_id and status are required" },
-        { status: 400 }
-      );
+    if (!isValidUUID(application_id)) {
+      return errorResponse("Valid application_id is required", 400);
+    }
+
+    const validatedStatus = validateEnum(
+      nextStatus,
+      ["withdrawn", "shortlisted", "interview", "rejected"] as const
+    );
+
+    if (!validatedStatus) {
+      return errorResponse("Invalid status transition", 400);
     }
 
     const supabase = createServerAdminClient();
@@ -173,218 +326,71 @@ export async function PATCH(req: NextRequest) {
       .single();
 
     if (fetchErr || !appRecord) {
-      return NextResponse.json(
-        { error: "Application not found" },
-        { status: 404 }
-      );
+      return errorResponse("Application not found", 404);
     }
 
     const proj = appRecord.project as any;
 
-    // Talent withdrawing own pending application
-    if (nextStatus === "withdrawn") {
+    // Authorization & State Transition Rules
+    if (validatedStatus === "withdrawn") {
+      // Only applicant can withdraw
       if (appRecord.talent_id !== caller.id) {
-        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+        return errorResponse("Forbidden: You cannot withdraw another user's proposal", 403);
       }
       if (appRecord.status === "accepted" || appRecord.status === "rejected") {
-        return NextResponse.json(
-          { error: "Cannot withdraw a finalized application" },
-          { status: 400 }
-        );
-      }
-    } else if (["shortlisted", "interview", "rejected"].includes(nextStatus)) {
-      // Business owner changing stage
-      if (!caller.businessId || proj?.business_id !== caller.businessId) {
-        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+        return errorResponse("Cannot withdraw a finalized application", 400);
       }
     } else {
-      return NextResponse.json(
-        { error: "Invalid status transition" },
-        { status: 400 }
-      );
+      // Business owner changing stage
+      const isOwner = caller.businessId && proj?.business_id === caller.businessId;
+      const isAdmin = caller.roles.includes("admin");
+
+      if (!isOwner && !isAdmin) {
+        return errorResponse("Forbidden: Business owner permission required", 403);
+      }
+      if (appRecord.status === "withdrawn" || appRecord.status === "accepted") {
+        return errorResponse(`Cannot update an application that is already ${appRecord.status}`, 400);
+      }
     }
 
     const { data: updated, error: updateErr } = await supabase
       .from("project_applications")
-      .update({ status: nextStatus })
+      .update({ status: validatedStatus })
       .eq("id", application_id)
       .select("id, status, updated_at")
       .single();
 
     if (updateErr || !updated) {
-      return NextResponse.json(
-        { error: updateErr?.message || "Failed to update application" },
-        { status: 500 }
-      );
+      return errorResponse(updateErr?.message || "Failed to update application", 500);
     }
 
-    if (nextStatus !== "withdrawn") {
+    // In-app notification for talent
+    if (validatedStatus !== "withdrawn") {
       await supabase.from("notification_inbox").insert({
         user_id: appRecord.talent_id,
-        kind: `application_${nextStatus}`,
-        title: `Application ${nextStatus.charAt(0).toUpperCase() + nextStatus.slice(1)}`,
-        body: `Your application for "${proj?.title || "a project"}" was moved to ${nextStatus}.`,
+        kind: `application_${validatedStatus}`,
+        title: `Application ${validatedStatus.charAt(0).toUpperCase() + validatedStatus.slice(1)}`,
+        body: `Your proposal for "${proj?.title || "Project"}" was updated to ${validatedStatus}.`,
         project_id: appRecord.project_id,
       });
     }
 
-    await supabase.from("admin_audit_events").insert({
-      actor_id: caller.id,
-      action: `application.${nextStatus}`,
-      entity_table: "project_applications",
-      entity_id: application_id,
+    // Audit log
+    await logAuditEvent({
+      actorId: caller.id,
+      action: `application.${validatedStatus}`,
+      entityTable: "project_applications",
+      entityId: application_id,
       details: {
         project_id: appRecord.project_id,
         previous_status: appRecord.status,
-        next_status: nextStatus,
+        next_status: validatedStatus,
       },
     });
 
-    return NextResponse.json({ success: true, application: updated });
+    return jsonResponse({ success: true, application: updated });
   } catch (err: any) {
-    console.error("Unhandled error in PATCH /api/applications:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
-  }
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const caller = await getAuthenticatedUser(req);
-    if (!caller) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    if (!caller.roles.includes("talent")) {
-      return NextResponse.json(
-        { error: "Forbidden: Talent role required to submit proposals" },
-        { status: 403 }
-      );
-    }
-
-    const body = await req.json();
-    const { project_id, proposal, proposed_budget, portfolio_item_ids = [] } = body;
-
-    if (!project_id || !proposal?.trim()) {
-      return NextResponse.json(
-        { error: "Project ID and proposal are required" },
-        { status: 400 }
-      );
-    }
-
-    const supabase = createServerAdminClient();
-
-    // 1. Verify project is published, approved, and deadline is open
-    const { data: project, error: projErr } = await supabase
-      .from("project_listings")
-      .select(`
-        id,
-        business_id,
-        budget,
-        status,
-        application_deadline,
-        business:business_profiles(owner_id),
-        moderation:project_moderation(status)
-      `)
-      .eq("id", project_id)
-      .single();
-
-    if (projErr || !project) {
-      return NextResponse.json({ error: "Project not found" }, { status: 404 });
-    }
-
-    if (project.status !== "published" && project.status !== "active") {
-      return NextResponse.json(
-        { error: "This project is not accepting applications" },
-        { status: 400 }
-      );
-    }
-
-    // Check not business owner
-    const businessOwner = (project.business as any)?.owner_id;
-    if (businessOwner === caller.id) {
-      return NextResponse.json(
-        { error: "You cannot apply to your own project" },
-        { status: 400 }
-      );
-    }
-
-    // Check one application per talent/listing
-    const { data: existingApp } = await supabase
-      .from("project_applications")
-      .select("id, status")
-      .eq("project_id", project_id)
-      .eq("talent_id", caller.id)
-      .maybeSingle();
-
-    if (existingApp) {
-      return NextResponse.json(
-        { error: "You have already applied to this project", application: existingApp },
-        { status: 409 }
-      );
-    }
-
-    // 2. Insert application
-    const { data: application, error: appErr } = await supabase
-      .from("project_applications")
-      .insert({
-        project_id,
-        talent_id: caller.id,
-        proposal: proposal.trim(),
-        proposed_budget: proposed_budget ? Number(proposed_budget) : project.budget,
-        status: "submitted",
-        submitted_at: new Date().toISOString(),
-      })
-      .select("id, project_id, talent_id, proposal, status, proposed_budget, submitted_at")
-      .single();
-
-    if (appErr || !application) {
-      console.error("Application insert error:", appErr);
-      return NextResponse.json(
-        { error: appErr?.message || "Failed to submit proposal" },
-        { status: 500 }
-      );
-    }
-
-    // 3. Attach owned portfolio items if provided
-    if (Array.isArray(portfolio_item_ids) && portfolio_item_ids.length > 0) {
-      const { data: ownedItems } = await supabase
-        .from("portfolio_items")
-        .select("id")
-        .eq("talent_id", caller.id)
-        .in("id", portfolio_item_ids);
-
-      const validIds = (ownedItems || []).map((i) => i.id);
-      if (validIds.length > 0) {
-        const portfolioInserts = validIds.map((pid) => ({
-          application_id: application.id,
-          portfolio_item_id: pid,
-        }));
-        await supabase
-          .from("project_application_portfolio")
-          .insert(portfolioInserts);
-      }
-    }
-
-    // 4. Notify business owner (using valid notification_inbox columns)
-    if (businessOwner) {
-      await supabase.from("notification_inbox").insert({
-        user_id: businessOwner,
-        kind: "application_received",
-        title: "New Application Received",
-        body: `A talent submitted a proposal for your project listing.`,
-        project_id,
-      });
-    }
-
-    return NextResponse.json({ success: true, application });
-  } catch (err: any) {
-    console.error("Unhandled error in POST /api/applications:", err);
-    return NextResponse.json(
-      { error: err?.message || "Internal server error" },
-      { status: 500 }
-    );
+    console.error("[PATCH /api/applications error]:", err);
+    return errorResponse("Internal server error", 500);
   }
 }

@@ -367,3 +367,311 @@ export async function fetchOverviewData(): Promise<any | null> {
     return null;
   }
 }
+
+
+export async function fetchPaymentsData(): Promise<{
+  transactions: any[];
+  escrows: any[];
+}> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { transactions: [], escrows: [] };
+    const res = await fetch("/api/payments", {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) return { transactions: [], escrows: [] };
+    const data = await res.json();
+    return {
+      transactions: data.transactions || [],
+      escrows: data.escrows || [],
+    };
+  } catch {
+    return { transactions: [], escrows: [] };
+  }
+}
+
+export async function fundContractEscrow(
+  contractId: string,
+  amount?: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+
+    const res = await fetch("/api/payments", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "fund_escrow",
+        contract_id: contractId,
+        amount,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function releaseContractEscrow(
+  contractId: string,
+  amount?: number
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+
+    const res = await fetch("/api/payments", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "release_escrow",
+        contract_id: contractId,
+        amount,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function deletePortfolioItem(
+  itemId: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+
+    const res = await fetch("/api/overview", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "delete_portfolio_item",
+        item_id: itemId,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function fetchSkillAssessments(): Promise<any[]> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return [];
+    const res = await fetch("/api/verification", {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.assessments || [];
+  } catch {
+    return [];
+  }
+}
+
+export async function submitSkillAssessment(
+  assessmentId: string,
+  answers: Record<string, any>
+): Promise<{ success: boolean; isVerified?: boolean; score?: number; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+
+    const res = await fetch("/api/verification", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        assessment_id: assessmentId,
+        answers,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return {
+      success: true,
+      isVerified: data.isVerified,
+      score: data.score,
+    };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function fileReport(
+  target: {
+    reported_user_id?: string;
+    project_id?: string;
+    review_id?: string;
+    message_id?: string;
+  },
+  reason: string,
+  details?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+
+    const res = await fetch("/api/reports", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        ...target,
+        reason,
+        details,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+
+export async function fetchAdminData(): Promise<any | null> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return null;
+    const res = await fetch("/api/admin", {
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function moderateListingAction(
+  projectId: string,
+  status: "approved" | "rejected" | "hidden" | "pending",
+  featured = false
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+    const res = await fetch("/api/admin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "moderate_listing",
+        project_id: projectId,
+        status,
+        featured,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function toggleUserStatusAction(
+  userId: string,
+  status: "active" | "suspended" | "closed",
+  reason?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+    const res = await fetch("/api/admin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "toggle_user_status",
+        user_id: userId,
+        status,
+        reason,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function resolveReportAction(
+  reportId: string,
+  status: "resolved" | "dismissed" | "investigating",
+  resolution?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+    const res = await fetch("/api/admin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "resolve_report",
+        report_id: reportId,
+        status,
+        resolution,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
