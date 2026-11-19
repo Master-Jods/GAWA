@@ -17,17 +17,32 @@ export interface AccountProfile {
   profile_visible: boolean;
 }
 
+interface PendingMfaChallenge {
+  challengeId: string;
+  userId: string;
+  channel: string;
+}
+
 interface AuthContextType {
   user: User | null;
   session: Session | null;
   profile: AccountProfile | null;
   role: UserRole;
   loading: boolean;
+  pendingMfaChallenge: PendingMfaChallenge | null;
   signIn: (
     email: string,
     password: string,
     expectedRole?: "talent" | "business"
-  ) => Promise<{ error?: string; role?: UserRole }>;
+  ) => Promise<{
+    error?: string;
+    role?: UserRole;
+    mfaRequired?: boolean;
+    challengeId?: string;
+    userId?: string;
+    channel?: string;
+    method?: string;
+  }>;
   signUp: (params: {
     email: string;
     password: string;
@@ -37,6 +52,13 @@ interface AuthContextType {
   }) => Promise<{ error?: string; requiresEmailConfirmation?: boolean; role?: UserRole }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
+  signInWithGoogle: () => Promise<{ error?: string }>;
+  verifyOtp: (
+    challengeId: string,
+    code: string,
+    userId: string
+  ) => Promise<{ error?: string; role?: string }>;
+  resendOtp: (challengeId: string) => Promise<{ error?: string; challengeId?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -47,6 +69,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<AccountProfile | null>(null);
   const [role, setRole] = useState<UserRole>("talent");
   const [loading, setLoading] = useState(true);
+  const [pendingMfaChallenge, setPendingMfaChallenge] =
+    useState<PendingMfaChallenge | null>(null);
 
   const fetchUserData = async (currentUser: User): Promise<UserRole> => {
     let resolvedRole: UserRole =
@@ -125,56 +149,53 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     password: string,
     expectedRole?: "talent" | "business"
   ) => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password, expected_role: expectedRole }),
+      });
 
-    if (error) {
-      return { error: error.message };
-    }
+      const data = await res.json();
 
-    if (data.user) {
-      // Check account status
-      const { data: statusData } = await supabase
-        .from("account_statuses")
-        .select("status")
-        .eq("user_id", data.user.id)
-        .maybeSingle();
-
-      if (statusData?.status === "suspended" || statusData?.status === "closed") {
-        await supabase.auth.signOut();
-        setUser(null);
-        setSession(null);
-        setProfile(null);
-        return { error: `Your account is currently ${statusData.status}.` };
+      if (!res.ok) {
+        return { error: data.error || "Login failed" };
       }
 
-      const actualRole = await fetchUserData(data.user);
-
-      // Strictly prevent Talent and Business accounts from logging into each other's portal
-      if (
-        expectedRole &&
-        actualRole !== "admin" &&
-        actualRole !== expectedRole
-      ) {
-        await supabase.auth.signOut();
-        setUser(null);
-        setSession(null);
-        setProfile(null);
-        setRole("talent");
+      // MFA required
+      if (data.mfa_required) {
+        setPendingMfaChallenge({
+          challengeId: data.challenge_id,
+          userId: data.user_id,
+          channel: data.channel || "email",
+        });
         return {
-          error:
-            actualRole === "business"
-              ? "This account is registered as a Business account. Please switch to the Business tab to log in."
-              : "This account is registered as a Talent account. Please switch to the Talent tab to log in.",
+          mfaRequired: true,
+          challengeId: data.challenge_id,
+          userId: data.user_id,
+          channel: data.channel || "email",
+          method: data.method,
         };
       }
 
-      return { role: actualRole };
-    }
+      // Normal session response
+      if (data.access_token && data.refresh_token) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+        });
+        if (sessionError) {
+          return { error: sessionError.message };
+        }
+        // fetchUserData will be triggered by onAuthStateChange
+        const actualRole = data.role as UserRole || "talent";
+        return { role: actualRole };
+      }
 
-    return {};
+      return { error: "Unexpected response from server" };
+    } catch (err: any) {
+      return { error: err?.message || "Network error" };
+    }
   };
 
   const signUp = async ({
@@ -216,16 +237,102 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // ignore logout API errors
+    }
     await supabase.auth.signOut();
     setUser(null);
     setSession(null);
     setProfile(null);
     setRole("talent");
+    setPendingMfaChallenge(null);
   };
 
   const refreshProfile = async () => {
     if (user) {
       await fetchUserData(user);
+    }
+  };
+
+  const signInWithGoogle = async (): Promise<{ error?: string }> => {
+    try {
+      const res = await fetch("/api/auth/google");
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        return { error: data.error || "Failed to initiate Google sign-in" };
+      }
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+        return {};
+      }
+      return { error: "No redirect URL received" };
+    } catch (err: any) {
+      return { error: err?.message || "Network error" };
+    }
+  };
+
+  const verifyOtp = async (
+    challengeId: string,
+    code: string,
+    userId: string
+  ): Promise<{ error?: string; role?: string }> => {
+    try {
+      const res = await fetch("/api/auth/otp/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
+        body: JSON.stringify({ challenge_id: challengeId, code, user_id: userId }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        return { error: data.error || "OTP verification failed" };
+      }
+
+      // Set session from OTP verify response
+      if (data.access_token && data.refresh_token) {
+        await supabase.auth.setSession({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+        });
+      }
+
+      setPendingMfaChallenge(null);
+      return { role: data.role };
+    } catch (err: any) {
+      return { error: err?.message || "Network error" };
+    }
+  };
+
+  const resendOtp = async (
+    challengeId: string
+  ): Promise<{ error?: string; challengeId?: string }> => {
+    try {
+      const res = await fetch("/api/auth/otp/resend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
+        body: JSON.stringify({ challenge_id: challengeId }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        return { error: data.error || "Failed to resend OTP" };
+      }
+
+      if (data.challenge_id) {
+        setPendingMfaChallenge((prev) =>
+          prev ? { ...prev, challengeId: data.challenge_id } : null
+        );
+        return { challengeId: data.challenge_id };
+      }
+
+      return {};
+    } catch (err: any) {
+      return { error: err?.message || "Network error" };
     }
   };
 
@@ -237,10 +344,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         profile,
         role,
         loading,
+        pendingMfaChallenge,
         signIn,
         signUp,
         signOut,
         refreshProfile,
+        signInWithGoogle,
+        verifyOtp,
+        resendOtp,
       }}
     >
       {children}
