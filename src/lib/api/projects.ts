@@ -32,7 +32,7 @@ export function getInitials(name: string): string {
 export function mapRawListingToProject(
   item: any,
   applicantsCount = 0,
-  skillMatch = 85
+  skillMatch = 0
 ): Project {
   const skills = (item.required_skills || [])
     .map((rs: any) => rs.skill?.name || rs.name)
@@ -58,7 +58,7 @@ export function mapRawListingToProject(
     duration: item.duration_label || "Flexible",
     skills: skills.length > 0 ? skills : ["General"],
     applicants: derivedApplicants,
-    match: skillMatch > 0 ? skillMatch : 85,
+    match: Math.max(0, Math.min(100, Number(skillMatch) || 0)),
     category: item.category?.name || "General",
     posted: formatRelativeTime(item.published_at || item.created_at),
     featured: isFeatured,
@@ -106,7 +106,7 @@ export async function fetchPublicProjects(): Promise<Project[]> {
     const projects: Project[] = await Promise.all(
       listings.map(async (item: any) => {
         let applicantsCount = 0;
-        let skillMatch = 85;
+        let skillMatch = 0;
 
         try {
           const { data: count } = await supabase.rpc("project_applicant_count", {
@@ -117,7 +117,7 @@ export async function fetchPublicProjects(): Promise<Project[]> {
           const { data: match } = await supabase.rpc("project_skill_match", {
             pid: item.id,
           });
-          if (typeof match === "number" && match > 0) skillMatch = match;
+          if (typeof match === "number") skillMatch = match;
         } catch {
           // RPC may fail if unauthenticated
         }
@@ -666,6 +666,37 @@ export async function resolveReportAction(
         report_id: reportId,
         status,
         resolution,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) return { success: false, error: data.error };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+export async function reviewVerificationAction(
+  submissionId: string,
+  status: "verified" | "rejected",
+  notes?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session) return { success: false, error: "Not authenticated" };
+    const res = await fetch("/api/admin", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({
+        action: "review_verification",
+        submission_id: submissionId,
+        status,
+        notes,
       }),
     });
     const data = await res.json();

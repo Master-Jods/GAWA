@@ -49,15 +49,18 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // 3. Fetch caller's existing submissions
+    // 3. Fetch caller's latest submissions (ordered newest first)
     const { data: userSubmissions } = await supabase
       .from("verification_submissions")
       .select("id, assessment_id, status, score, submitted_at, expires_at")
-      .eq("talent_id", caller.id);
+      .eq("talent_id", caller.id)
+      .order("created_at", { ascending: false });
 
     const subMap = new Map<string, any>();
     for (const s of userSubmissions || []) {
-      subMap.set(s.assessment_id, s);
+      if (!subMap.has(s.assessment_id)) {
+        subMap.set(s.assessment_id, s);
+      }
     }
 
     const payload = (assessments || []).map((a) => ({
@@ -108,33 +111,34 @@ export async function POST(req: NextRequest) {
     let totalPoints = 0;
     let earnedPoints = 0;
 
-    if (questions && questions.length > 0) {
-      for (const q of questions) {
-        const pts = Number(q.points || 1);
-        totalPoints += pts;
+    if (!questions || questions.length === 0) {
+      return errorResponse("This assessment has no active questions yet", 400);
+    }
 
-        const userAnswer = answers[q.id];
-        const correct = q.correct_answer;
+    for (const q of questions) {
+      const pts = Number(q.points || 1);
+      totalPoints += pts;
 
-        if (
-          userAnswer !== undefined &&
-          JSON.stringify(userAnswer) === JSON.stringify(correct)
-        ) {
-          earnedPoints += pts;
-        }
+      const userAnswer = answers[q.id];
+      const correct = q.correct_answer;
+
+      if (
+        userAnswer !== undefined &&
+        JSON.stringify(userAnswer) === JSON.stringify(correct)
+      ) {
+        earnedPoints += pts;
       }
-    } else {
-      // Default baseline assessment with 85% default prototype passing
-      totalPoints = 100;
-      earnedPoints = 85;
     }
 
     const finalScore = Math.round((earnedPoints / (totalPoints || 1)) * 100);
     const passingScore = Number(assessment.passing_score || 80);
     const isVerified = finalScore >= passingScore;
     const resultStatus = isVerified ? "verified" : "rejected";
+    const expiresAt = isVerified
+      ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+      : null;
 
-    // 3. Upsert submission record
+    // 3. Insert submission record
     const { data: submission, error: subErr } = await supabase
       .from("verification_submissions")
       .insert({
@@ -145,6 +149,7 @@ export async function POST(req: NextRequest) {
         score: finalScore,
         submitted_at: new Date().toISOString(),
         reviewed_at: isVerified ? new Date().toISOString() : null,
+        expires_at: expiresAt,
       })
       .select()
       .single();
@@ -153,12 +158,12 @@ export async function POST(req: NextRequest) {
       return errorResponse(subErr?.message || "Failed to submit assessment", 500);
     }
 
-    // 4. Update talent_skills
+    // 4. Update talent_skills (constraint allows 'beginner' | 'intermediate' | 'advanced')
     if (assessment.skill_id) {
       await supabase.from("talent_skills").upsert({
         talent_id: caller.id,
         skill_id: assessment.skill_id,
-        proficiency: isVerified ? "verified" : "advanced",
+        proficiency: isVerified ? "advanced" : "intermediate",
       });
     }
 

@@ -75,12 +75,16 @@ import {
   fetchMessagesData,
   fetchOverviewData,
   fetchAdminData,
+  fetchSkillAssessments,
+  submitSkillAssessment,
   fundContractEscrow,
   releaseContractEscrow,
   deletePortfolioItem,
   moderateListingAction,
   toggleUserStatusAction,
   resolveReportAction,
+  reviewVerificationAction,
+  fileReport,
   formatRelativeTime,
   getInitials,
 } from "@/lib/api/projects";
@@ -2137,6 +2141,7 @@ function TalentApp({
   const [overview, setOverview] = useState<any | null>(null);
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<"all" | "best" | "new" | "remote" | "saved">("all");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"newest" | "budget" | "match">("newest");
 
   // Clear project detail view whenever the user navigates via sidebar
@@ -2194,14 +2199,23 @@ function TalentApp({
     }
   };
 
+  const availableCategories = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of marketProjects) {
+      if (p.category) set.add(p.category);
+    }
+    return Array.from(set);
+  }, [marketProjects]);
+
   const filteredProjects = useMemo(() => {
     const list = marketProjects.filter((p) => {
-      const matchesQuery = `${p.title} ${p.company} ${p.skills.join(" ")}`
+      const matchesQuery = `${p.title} ${p.company} ${p.skills.join(" ")} ${p.category}`
         .toLowerCase()
         .includes(query.toLowerCase());
       if (!matchesQuery) return false;
+      if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
       if (chip === "saved") return saved.some((x) => String(x) === String(p.id));
-      if (chip === "best") return p.match >= 85;
+      if (chip === "best") return p.match >= 50;
       if (chip === "remote") return (p.workSetup || "remote").toLowerCase() === "remote";
       if (chip === "new")
         return (
@@ -2219,7 +2233,7 @@ function TalentApp({
       return [...list].sort((a, b) => b.match - a.match);
     }
     return list;
-  }, [marketProjects, query, chip, saved, sortBy]);
+  }, [marketProjects, query, chip, categoryFilter, saved, sortBy]);
 
   if (selected)
     return (
@@ -2334,17 +2348,31 @@ function TalentApp({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search by project, skill, or business…"
+              placeholder="Search by project name, skill, or business…"
             />
           </div>
+          <select
+            className="btn btn-white"
+            value={categoryFilter}
+            onChange={(e) => setCategoryFilter(e.target.value)}
+            aria-label="Filter by category"
+          >
+            <option value="all">All categories</option>
+            {availableCategories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
           <button
             className="btn btn-white"
             onClick={() => {
               setChip("all");
+              setCategoryFilter("all");
               setQuery("");
             }}
           >
-            <Filter size={17} /> Filters <span>{chip === "all" && !query ? 0 : 1}</span>
+            <Filter size={18} /> Reset <span>{chip === "all" && categoryFilter === "all" && !query ? 0 : 1}</span>
           </button>
         </div>
         <div className="filter-chips">
@@ -2482,14 +2510,15 @@ function TalentApp({
         overview={overview}
         onRefresh={loadTalentData}
         onEditProfile={() => setActive("Settings")}
+        onVerifySkill={() => setActive("Skill Verification")}
       />
     );
   if (active === "Skill Verification")
     return (
       <Verification
         toast={toast}
-        verifications={overview?.verifications || []}
         onRefresh={loadTalentData}
+        onOpenPassport={() => setActive("My Portfolio")}
       />
     );
   if (active === "Reviews")
@@ -2527,6 +2556,7 @@ function TalentApp({
       skills={overview?.skills || []}
       verifications={overview?.verifications || []}
       portfolioCount={(overview?.portfolio || []).length}
+      notifications={overview?.notifications || []}
     />
   );
 }
@@ -2543,6 +2573,7 @@ function TalentOverview({
   skills = [],
   verifications = [],
   portfolioCount = 0,
+  notifications = [],
 }: {
   onNavigate: (s: string) => void;
   onProject: (p: Project) => void;
@@ -2555,13 +2586,15 @@ function TalentOverview({
   skills?: any[];
   verifications?: any[];
   portfolioCount?: number;
+  notifications?: any[];
 }) {
   const { profile } = useAuth();
   const todayStr = new Date()
     .toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })
     .toUpperCase();
 
-  const hasSkills = skills.length > 0 || verifications.length > 0;
+  const verifiedBadges = verifications.filter((v: any) => v.status === "verified");
+  const hasSkills = skills.length > 0 || verifiedBadges.length > 0;
   const hasPortfolio = portfolioCount > 0;
   const profileStrength = 25 + (hasSkills ? 35 : 0) + (hasPortfolio ? 40 : 0);
 
@@ -2570,12 +2603,17 @@ function TalentOverview({
       <div className="welcome-row">
         <div>
           <span>{todayStr}</span>
-          <h1>Welcome, {profile?.display_name || "Talent"}.</h1>
-          <p>Discover projects matching your skills and start building proof of work.</p>
+          <h1>Welcome, {profile?.display_name || "Member"}.</h1>
+          <p>Find open projects, verify your skills, and build a clear work record clients can trust.</p>
         </div>
-        <button className="btn btn-primary" onClick={() => onNavigate("Explore Projects")}>
-          Find a project <Search size={17} />
-        </button>
+        <div className="welcome-actions">
+          <button className="btn btn-white" onClick={() => onNavigate("My Portfolio")}>
+            <Award size={18} /> Open Skill Passport
+          </button>
+          <button className="btn btn-primary" onClick={() => onNavigate("Explore Projects")}>
+            Find a project <Search size={18} />
+          </button>
+        </div>
       </div>
       <div className="stat-grid">
         <Stat
@@ -2608,112 +2646,131 @@ function TalentOverview({
         />
       </div>
       <div className="dashboard-grid">
-        <section className="panel profile-progress">
-          <div className="panel-head">
-            <div>
-              <b>Complete your profile</b>
-              <span>Strong profiles get 2× more project invites.</span>
+        <div className="dash-col-main">
+          <section className="panel profile-progress">
+            <div className="panel-head">
+              <div>
+                <b>Your Skill Passport progress</b>
+                <span>Complete these three steps so clients can trust your profile faster.</span>
+              </div>
+              <strong>{profileStrength}%</strong>
             </div>
-            <strong>{profileStrength}%</strong>
-          </div>
-          <div className="progress">
-            <i style={{ width: `${profileStrength}%` }}></i>
-          </div>
-          <div className="check-row">
-            <span className="done">
-              <Check /> Basic profile
-            </span>
-            <span className={hasSkills ? "done" : ""}>
-              {hasSkills ? <Check /> : <span className="dot"></span>} Add skills
-            </span>
-            <span className={hasPortfolio ? "done" : ""}>
-              {hasPortfolio ? <Check /> : <span className="dot"></span>} Add portfolio items
-            </span>
-            <button onClick={() => onNavigate("My Portfolio")}>
-              Continue <ArrowRight />
-            </button>
-          </div>
-        </section>
-        <section className="panel activity-panel">
-          <div className="panel-title">
-            <b>Recent activity</b>
-            <button onClick={() => onNavigate("My Applications")}>View all</button>
-          </div>
-          <div style={{ padding: "32px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
-            {applicationsCount > 0 || activeContractsCount > 0
-              ? `You have ${applicationsCount} submitted application${applicationsCount === 1 ? "" : "s"} and ${activeContractsCount} active project${activeContractsCount === 1 ? "" : "s"}.`
-              : "No recent activity yet. When you submit applications or receive messages, notices will appear here."}
-          </div>
-        </section>
-        <section className="panel recommendations">
-          <div className="panel-title">
-            <div>
-              <b>Recommended for you</b>
-              <span>Based on your skills and preferences</span>
+            <div className="progress">
+              <i style={{ width: `${profileStrength}%` }}></i>
             </div>
-            <button onClick={() => onNavigate("Explore Projects")}>
-              View all <ArrowRight />
-            </button>
-          </div>
-          <div className="compact-projects">
-            {projects.length > 0 ? (
-              projects.slice(0, 3).map((p) => (
-                <div className="compact-project" onClick={() => onProject(p)} key={p.id}>
-                  <Avatar initials={p.initials} color={p.color} />
-                  <div>
-                    <span>{p.company}</span>
-                    <b>{p.title}</b>
-                    <div className="tags">
-                      {p.skills.slice(0, 2).map((s) => (
-                        <i key={s}>{s}</i>
-                      ))}
+            <div className="check-row">
+              <span className="done">
+                <Check /> Account created
+              </span>
+              <span className={hasSkills ? "done" : ""}>
+                {hasSkills ? <Check /> : <span className="dot"></span>} Add or verify skills
+              </span>
+              <span className={hasPortfolio ? "done" : ""}>
+                {hasPortfolio ? <Check /> : <span className="dot"></span>} Add a work sample
+              </span>
+              <button onClick={() => onNavigate("My Portfolio")}>
+                Update Passport <ArrowRight />
+              </button>
+            </div>
+          </section>
+
+          <section className="panel recommendations">
+            <div className="panel-title">
+              <div>
+                <b>Open projects for you</b>
+                <span>Clear budgets, timelines, and required skills</span>
+              </div>
+              <button onClick={() => onNavigate("Explore Projects")}>
+                View all <ArrowRight />
+              </button>
+            </div>
+            <div className="compact-projects">
+              {projects.length > 0 ? (
+                projects.slice(0, 3).map((p) => (
+                  <div className="compact-project" onClick={() => onProject(p)} key={p.id}>
+                    <Avatar initials={p.initials} color={p.color} />
+                    <div>
+                      <span>{p.company} · {p.duration}</span>
+                      <b>{p.title}</b>
+                      <div className="tags">
+                        {p.skills.slice(0, 3).map((s) => (
+                          <i key={s}>{s}</i>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="compact-end">
+                      <strong>{php(p.budget)}</strong>
+                      <Badge tone={p.match >= 50 ? "green" : "blue"}>{p.match}% skill match</Badge>
                     </div>
                   </div>
-                  <div className="compact-end">
-                    <strong>{php(p.budget)}</strong>
-                    <Badge tone="green">{p.match}% match</Badge>
-                  </div>
+                ))
+              ) : (
+                <div className="empty-state-box">
+                  <b>No open projects right now</b>
+                  <p>Check the Explore Projects page for newly approved work.</p>
                 </div>
-              ))
+              )}
+            </div>
+          </section>
+        </div>
+
+        <div className="dash-col-side">
+          <section className="panel skills-panel">
+            <div className="panel-title">
+              <b>Verified skill badges</b>
+              <button onClick={() => onNavigate("Skill Verification")}>Verify skills</button>
+            </div>
+            {verifiedBadges.length > 0 ? (
+              <div className="verified-badge-list">
+                {verifiedBadges.slice(0, 4).map((v: any) => (
+                  <div className="verified-badge-row" key={v.id}>
+                    <div>
+                      <ShieldCheck size={20} />
+                      <span>{v.skill_name}</span>
+                    </div>
+                    <Badge tone="green">{v.score}% Verified</Badge>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <div style={{ padding: "24px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
-                No recommended projects right now. Browse all opportunities in the marketplace.
+              <div className="empty-state-box">
+                <b>No verified badges yet</b>
+                <p>Pass a 5-question skill check to earn your first verified badge.</p>
+                <button className="btn btn-primary btn-sm" onClick={() => onNavigate("Skill Verification")}>
+                  Start skill check
+                </button>
               </div>
             )}
-          </div>
-        </section>
-        <section className="panel skills-panel">
-          <div className="panel-title">
-            <b>Your verified skills</b>
-            <button onClick={() => onNavigate("Skill Verification")}>Manage</button>
-          </div>
-          {verifications.length > 0 ? (
-            <div style={{ display: "grid", gap: 10 }}>
-              {verifications.map((v: any) => (
-                <div
-                  key={v.id}
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    padding: "10px 12px",
-                    background: "#f8fafc",
-                    borderRadius: 10,
-                  }}
-                >
-                  <span style={{ fontWeight: 600, fontSize: 13, color: "#102a43" }}>
-                    {v.skill_name}
-                  </span>
-                  <Badge tone="green">{v.score}% Verified</Badge>
-                </div>
-              ))}
+          </section>
+
+          <section className="panel activity-panel">
+            <div className="panel-title">
+              <b>Recent updates</b>
+              <button onClick={() => onNavigate("My Applications")}>My applications</button>
             </div>
-          ) : (
-            <div style={{ padding: "24px 16px", color: "#627d98", fontSize: 13, textAlign: "center" }}>
-              No verified skills yet. Complete skill verification assessments to earn badges.
-            </div>
-          )}
-        </section>
+            {notifications.length > 0 ? (
+              <div className="activity-feed-list">
+                {notifications.slice(0, 2).map((n: any) => (
+                  <div className="activity-feed-item" key={n.id}>
+                    <span className={`stat-icon ${n.read_at ? "blue" : "green"}`}>
+                      <Bell size={18} />
+                    </span>
+                    <div>
+                      <b>{n.title}</b>
+                      <p>{n.body}</p>
+                      <small>{formatRelativeTime(n.created_at)}</small>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state-box">
+                <b>No updates yet</b>
+                <p>Apply to a project or take a skill check to see updates here.</p>
+              </div>
+            )}
+          </section>
+        </div>
       </div>
     </main>
   );
@@ -4211,11 +4268,13 @@ function Portfolio({
   overview,
   onRefresh,
   onEditProfile,
+  onVerifySkill,
 }: {
   toast: (s: string) => void;
   overview?: any;
   onRefresh?: () => Promise<void>;
   onEditProfile?: () => void;
+  onVerifySkill?: () => void;
 }) {
   const { profile, refreshProfile } = useAuth();
   const [modalOpen, setModalOpen] = useState(false);
@@ -4224,12 +4283,19 @@ function Portfolio({
   const [workUrl, setWorkUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState<"avatar" | "banner" | null>(null);
+  const [selectedSkillToAdd, setSelectedSkillToAdd] = useState("");
+  const [selectedProficiency, setSelectedProficiency] = useState<"beginner" | "intermediate" | "advanced">("intermediate");
+  const [savingSkill, setSavingSkill] = useState(false);
 
-  const displayName = profile?.display_name || "My Portfolio";
+  const displayName = profile?.display_name || "My Skill Passport";
   const initials = getInitials(displayName);
   const portfolioItems = overview?.portfolio || [];
-  const verifiedSkills = overview?.verifications || [];
+  const allVerifications = overview?.verifications || [];
+  const verifiedSkills = allVerifications.filter((v: any) => v.status === "verified");
   const talentSkills = overview?.skills || [];
+  const catalogSkills = overview?.catalogSkills || [];
+  const completedContracts = overview?.completedContracts || [];
+  const talentProfile = overview?.talentProfile || null;
   const reviews = overview?.reviews || [];
   const avgRating =
     reviews.length > 0
@@ -4238,6 +4304,10 @@ function Portfolio({
           reviews.length
         ).toFixed(1)
       : "0.0";
+
+  const availableSkillsToAdd = catalogSkills.filter(
+    (cs: any) => !talentSkills.some((ts: any) => String(ts.id) === String(cs.id))
+  );
 
   const handleMediaChange = async (file: File | undefined, kind: "avatar" | "banner") => {
     if (!file) return;
@@ -4250,6 +4320,71 @@ function Portfolio({
     }
     await refreshProfile();
     toast(kind === "avatar" ? "Profile picture updated!" : "Profile banner updated!");
+  };
+
+  const handleAddSkill = async () => {
+    const skillName = selectedSkillToAdd || availableSkillsToAdd[0]?.name;
+    if (!skillName) {
+      toast("Choose a skill to add first");
+      return;
+    }
+    setSavingSkill(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch("/api/overview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "add_talent_skill",
+          skill_name: skillName,
+          proficiency: selectedProficiency,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data.error || "Could not add skill");
+        return;
+      }
+      setSelectedSkillToAdd("");
+      await onRefresh?.();
+      toast(`${skillName} added to your Skill Passport`);
+    } catch {
+      toast("Could not add skill");
+    } finally {
+      setSavingSkill(false);
+    }
+  };
+
+  const handleRemoveSkill = async (skillId: string, skillName: string) => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch("/api/overview", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          action: "remove_talent_skill",
+          skill_id: skillId,
+        }),
+      });
+      if (res.ok) {
+        await onRefresh?.();
+        toast(`Removed ${skillName}`);
+      }
+    } catch {
+      toast("Could not remove skill");
+    }
   };
 
   const handleAddWork = async () => {
@@ -4288,7 +4423,7 @@ function Portfolio({
       setWorkUrl("");
       setModalOpen(false);
       await onRefresh?.();
-      toast("Portfolio item added");
+      toast("Work sample saved to your Skill Passport");
     } catch {
       toast("Failed to add portfolio item");
     } finally {
@@ -4297,31 +4432,40 @@ function Portfolio({
   };
 
   const handleDeleteWork = async (itemId: string) => {
-    if (!confirm("Are you sure you want to remove this portfolio item?")) return;
+    if (!confirm("Are you sure you want to remove this work sample?")) return;
     const res = await deletePortfolioItem(itemId);
     if (res.success) {
-      toast("Portfolio item removed");
+      toast("Work sample removed");
       await onRefresh?.();
     } else {
-      toast(res.error || "Failed to remove portfolio item");
+      toast(res.error || "Failed to remove work sample");
     }
   };
 
   return (
     <main className="page">
       <PageTitle
-        eyebrow="MY PORTFOLIO"
-        title="Your work, your story"
-        text="A professional profile that grows with every project."
+        eyebrow="PORTFOLIO & SKILL PASSPORT"
+        title="Your Skill Passport & Proof of Work"
+        text="A clear record of your verified skills, completed projects, work samples, and client feedback."
         action={
-          <button
-            className="btn btn-primary"
-            onClick={() => (onEditProfile ? onEditProfile() : toast("Navigate to Settings to edit profile"))}
-          >
-            <PenLine /> Edit profile
-          </button>
+          <div className="welcome-actions">
+            <button
+              className="btn btn-white"
+              onClick={() => (onVerifySkill ? onVerifySkill() : toast("Open Skill Verification"))}
+            >
+              <ShieldCheck size={18} /> Verify a skill
+            </button>
+            <button
+              className="btn btn-primary"
+              onClick={() => (onEditProfile ? onEditProfile() : toast("Navigate to Settings to edit profile"))}
+            >
+              <PenLine size={18} /> Edit profile
+            </button>
+          </div>
         }
       />
+
       <section className="panel portfolio-hero">
         <div
           className="portfolio-cover"
@@ -4336,7 +4480,7 @@ function Portfolio({
           <div className="banner-actions-bar">
             <label className="banner-upload-btn">
               <ImageIcon />
-              <span>{uploadingMedia === "banner" ? "Uploading…" : "Change banner"}</span>
+              <span>{uploadingMedia === "banner" ? "Uploading…" : "Change cover photo"}</span>
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,image/gif"
@@ -4366,9 +4510,9 @@ function Portfolio({
           </div>
           <div>
             <h2>{displayName}</h2>
-            <b>{profile?.bio || "Tell clients what you specialize in and what you’re building."}</b>
+            <b>{talentProfile?.headline || profile?.bio || "Tell clients what kind of work you do best."}</b>
             <span>
-              <GraduationCap /> {profile?.location || "Philippines"}
+              <GraduationCap /> {talentProfile?.school ? `${talentProfile.school}${talentProfile.course ? ` · ${talentProfile.course}` : ""}` : profile?.location || "Philippines"}
             </span>
           </div>
           <div>
@@ -4379,105 +4523,235 @@ function Portfolio({
           </div>
         </div>
       </section>
+
+      <div className="passport-stats-strip">
+        <div className="panel passport-mini-stat">
+          <span className="stat-icon green"><Award size={20} /></span>
+          <div>
+            <strong>{verifiedSkills.length}</strong>
+            <span>Verified badges</span>
+          </div>
+        </div>
+        <div className="panel passport-mini-stat">
+          <span className="stat-icon blue"><Zap size={20} /></span>
+          <div>
+            <strong>{talentSkills.length}</strong>
+            <span>Listed skills</span>
+          </div>
+        </div>
+        <div className="panel passport-mini-stat">
+          <span className="stat-icon purple"><CheckCircle2 size={20} /></span>
+          <div>
+            <strong>{completedContracts.length}</strong>
+            <span>Completed projects</span>
+          </div>
+        </div>
+        <div className="panel passport-mini-stat">
+          <span className="stat-icon amber"><FolderKanban size={20} /></span>
+          <div>
+            <strong>{portfolioItems.length}</strong>
+            <span>Work samples</span>
+          </div>
+        </div>
+      </div>
+
       <div className="portfolio-grid">
         <section className="panel rich-copy">
-          <h2>About me</h2>
-          <p>
-            {profile?.bio ||
-              "Write a short overview of your background, experience, and the kind of work you're passionate about."}
-          </p>
-          <h3>Verified skills</h3>
-          {verifiedSkills.length > 0 || talentSkills.length > 0 ? (
-            <div className="tags" style={{ marginTop: 8 }}>
+          <div className="panel-title">
+            <div>
+              <b>Verified badges & skills</b>
+              <span>Verified badges come from passed assessments; listed skills are self-declared.</span>
+            </div>
+            {onVerifySkill && (
+              <button onClick={onVerifySkill}>
+                Take assessment <ArrowRight />
+              </button>
+            )}
+          </div>
+
+          <h3>Verified Skill Badges</h3>
+          {verifiedSkills.length > 0 ? (
+            <div className="verified-badge-list" style={{ marginBottom: 20 }}>
               {verifiedSkills.map((v: any) => (
-                <span key={v.id}>
-                  <Check size={14} /> {v.skill_name} ({v.score}%)
-                </span>
-              ))}
-              {talentSkills.map((ts: any) => (
-                <span key={ts.name}>{ts.name}</span>
+                <div className="verified-badge-row" key={v.id}>
+                  <div>
+                    <ShieldCheck size={18} />
+                    <div>
+                      <b>{v.skill_name}</b>
+                      <small style={{ display: "block", color: "#597285", fontSize: 12 }}>
+                        Passed on {v.submitted_at ? new Date(v.submitted_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Recent"}
+                      </small>
+                    </div>
+                  </div>
+                  <Badge tone="green">{v.score}% Verified</Badge>
+                </div>
               ))}
             </div>
           ) : (
-            <div style={{ color: "#627d98", fontSize: 13 }}>
-              No verified skills yet. Complete skill assessments to earn verified badges.
+            <div className="empty-state-box" style={{ marginBottom: 20 }}>
+              <b>No verified badges yet</b>
+              <p>Pass a 5-question skill assessment to earn your first verified badge.</p>
+              {onVerifySkill && (
+                <button className="btn btn-primary" onClick={onVerifySkill}>
+                  Start a skill check
+                </button>
+              )}
             </div>
           )}
+
+          <h3>My Listed Skills</h3>
+          {talentSkills.length > 0 ? (
+            <div className="passport-skill-chips">
+              {talentSkills.map((ts: any) => (
+                <span key={ts.id || ts.name} className="passport-skill-chip">
+                  <b>{ts.name}</b>
+                  <small>{ts.proficiency}</small>
+                  {ts.id && (
+                    <button
+                      type="button"
+                      title={`Remove ${ts.name}`}
+                      onClick={() => handleRemoveSkill(ts.id, ts.name)}
+                    >
+                      <X size={14} />
+                    </button>
+                  )}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p style={{ marginBottom: 14 }}>No self-reported skills added yet.</p>
+          )}
+
+          {availableSkillsToAdd.length > 0 && (
+            <div className="add-skill-bar">
+              <select
+                value={selectedSkillToAdd}
+                onChange={(e) => setSelectedSkillToAdd(e.target.value)}
+                aria-label="Choose a skill to add"
+              >
+                <option value="">Choose a skill to add…</option>
+                {availableSkillsToAdd.map((cs: any) => (
+                  <option key={cs.id} value={cs.name}>
+                    {cs.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={selectedProficiency}
+                onChange={(e) => setSelectedProficiency(e.target.value as any)}
+                aria-label="Skill level"
+              >
+                <option value="beginner">Beginner</option>
+                <option value="intermediate">Intermediate</option>
+                <option value="advanced">Advanced</option>
+              </select>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={savingSkill || !selectedSkillToAdd}
+                onClick={handleAddSkill}
+              >
+                <Plus size={16} /> {savingSkill ? "Adding..." : "Add skill"}
+              </button>
+            </div>
+          )}
+
+          <h3 style={{ marginTop: 24 }}>About Me</h3>
+          <p>
+            {profile?.bio ||
+              "Write a short introduction in Settings so clients understand your experience and strengths."}
+          </p>
         </section>
+
         <section className="panel">
           <div className="panel-title">
-            <b>Portfolio highlights</b>
+            <div>
+              <b>Proof of work & portfolio samples</b>
+              <span>Attach real examples of projects or outputs you have created.</span>
+            </div>
             <button onClick={() => setModalOpen(true)}>
-              Add work <Plus />
+              Add work sample <Plus />
             </button>
           </div>
           {portfolioItems.length === 0 ? (
-            <div
-              style={{
-                padding: "48px 16px",
-                textAlign: "center",
-                color: "#627d98",
-                background: "#f8fafc",
-                borderRadius: 12,
-                border: "1px dashed #dce7ed",
-              }}
-            >
-              <p>
-                No portfolio items uploaded yet. Click &apos;Add work&apos; to showcase case studies and work samples.
-              </p>
+            <div className="empty-state-box">
+              <b>No work samples added yet</b>
+              <p>Add a project title, brief description, or link to show clients what you can deliver.</p>
+              <button className="btn btn-primary" onClick={() => setModalOpen(true)}>
+                <Plus size={17} /> Add your first work sample
+              </button>
             </div>
           ) : (
-            <div style={{ display: "grid", gap: 12 }}>
+            <div className="portfolio-samples-list">
               {portfolioItems.map((item: any) => (
-                <div
-                  key={item.id}
-                  style={{
-                    padding: 16,
-                    borderRadius: 12,
-                    border: "1px solid #dce7ed",
-                    background: "#f8fafc",
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                    <b style={{ display: "block", color: "#102a43", marginBottom: 4 }}>
-                      {item.title}
-                    </b>
+                <div className="portfolio-sample-card" key={item.id}>
+                  <div className="portfolio-sample-head">
+                    <b>{item.title}</b>
                     <button
                       onClick={() => handleDeleteWork(item.id)}
                       title="Remove work sample"
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "#9fb3c8",
-                        cursor: "pointer",
-                        padding: 4,
-                        display: "inline-flex",
-                        alignItems: "center",
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.color = "#e12d39")}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = "#9fb3c8")}
+                      className="icon-danger-btn"
                     >
-                      <Trash2 size={16} />
+                      <Trash2 size={17} />
                     </button>
                   </div>
-                  {item.description && (
-                    <p style={{ fontSize: 13, color: "#486581", marginBottom: 6 }}>
-                      {item.description}
-                    </p>
-                  )}
+                  {item.description && <p>{item.description}</p>}
                   {item.external_url && (
-                    <a
-                      href={item.external_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ fontSize: 12, color: "#087EAD" }}
-                    >
-                      View project link →
+                    <a href={item.external_url} target="_blank" rel="noreferrer">
+                      Open project link <ArrowRight size={14} />
                     </a>
                   )}
                 </div>
               ))}
             </div>
+          )}
+
+          <div className="panel-title" style={{ marginTop: 28 }}>
+            <div>
+              <b>Completed GAWA projects</b>
+              <span>Verified collaborations finished on the platform</span>
+            </div>
+          </div>
+          {completedContracts.length > 0 ? (
+            <div className="portfolio-samples-list">
+              {completedContracts.map((c: any) => (
+                <div className="portfolio-sample-card" key={c.id}>
+                  <div className="portfolio-sample-head">
+                    <b>{c.title}</b>
+                    <Badge tone="green">Completed</Badge>
+                  </div>
+                  <p>
+                    Client: {c.company} · Budget: {php(c.agreed_amount)} · {c.duration}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state-box">
+              <p>Completed platform projects will appear here automatically once approved by a client.</p>
+            </div>
+          )}
+
+          {reviews.length > 0 && (
+            <>
+              <div className="panel-title" style={{ marginTop: 28 }}>
+                <div>
+                  <b>Client reputation & feedback</b>
+                  <span>Published reviews from completed collaborations</span>
+                </div>
+              </div>
+              <div className="portfolio-samples-list">
+                {reviews.slice(0, 3).map((r: any) => (
+                  <div className="portfolio-sample-card" key={r.id}>
+                    <div className="portfolio-sample-head">
+                      <b>{r.reviewer_name} · {r.project_title}</b>
+                      <Badge tone="amber">{r.rating} / 5 Stars</Badge>
+                    </div>
+                    {r.feedback && <p>&ldquo;{r.feedback}&rdquo;</p>}
+                  </div>
+                ))}
+              </div>
+            </>
           )}
         </section>
       </div>
@@ -4488,26 +4762,26 @@ function Portfolio({
             <button className="modal-close" onClick={() => setModalOpen(false)}>
               <X />
             </button>
-            <span className="auth-kicker">PORTFOLIO ITEM</span>
+            <span className="auth-kicker">PROOF OF WORK</span>
             <h2>Add work sample</h2>
             <label>
-              Title
+              Project or output title
               <input
                 value={workTitle}
                 onChange={(e) => setWorkTitle(e.target.value)}
-                placeholder="e.g. E-Commerce Mobile App Redesign"
+                placeholder="e.g. Barangay Harvest Tracker Web App"
               />
             </label>
             <label>
-              Description
+              What did you build or deliver?
               <textarea
                 value={workDesc}
                 onChange={(e) => setWorkDesc(e.target.value)}
-                placeholder="Describe the problem, your approach, and the outcome…"
+                placeholder="Describe what the client needed, what you did, and the result…"
               />
             </label>
             <label>
-              External link (optional)
+              Project link (optional)
               <input
                 value={workUrl}
                 onChange={(e) => setWorkUrl(e.target.value)}
@@ -4519,7 +4793,7 @@ function Portfolio({
               disabled={submitting}
               onClick={handleAddWork}
             >
-              {submitting ? "Saving..." : "Save to portfolio"}
+              {submitting ? "Saving..." : "Save to Skill Passport"}
             </button>
           </div>
         </div>
@@ -4530,203 +4804,276 @@ function Portfolio({
 
 function Verification({
   toast,
-  verifications = [],
   onRefresh,
+  onOpenPassport,
 }: {
   toast: (s: string) => void;
-  verifications?: any[];
   onRefresh?: () => Promise<void>;
+  onOpenPassport?: () => void;
 }) {
-  const [activeSkill, setActiveSkill] = useState<string | null>(null);
+  const [assessments, setAssessments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeAssessment, setActiveAssessment] = useState<any | null>(null);
   const [qIndex, setQIndex] = useState(0);
-  const [selectedAns, setSelectedAns] = useState<number>(0);
+  const [answersMap, setAnswersMap] = useState<Record<string, number>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [lastResult, setLastResult] = useState<{
+    title: string;
+    skill: string;
+    score: number;
+    isVerified: boolean;
+    passingScore: number;
+  } | null>(null);
 
-  const verifMap = new Map<string, number>();
-  for (const v of verifications) {
-    if (v.skill_name) {
-      verifMap.set(String(v.skill_name).toLowerCase(), Number(v.score) || 92);
+  const loadAssessments = async () => {
+    setLoading(true);
+    const list = await fetchSkillAssessments();
+    setAssessments(list);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadAssessments();
+  }, []);
+
+  const startAssessment = (assessment: any) => {
+    if (!assessment.questions || assessment.questions.length === 0) {
+      toast("This assessment does not have active questions yet.");
+      return;
     }
-  }
+    setActiveAssessment(assessment);
+    setQIndex(0);
+    setAnswersMap({});
+    setLastResult(null);
+  };
 
-  const catalogAssessments = [
-    ["Figma", "Interface Design"],
-    ["UI Design", "Design Foundations"],
-    ["React", "Web Development"],
-    ["User Research", "Product Design"],
-    ["Data Analytics", "Data"],
-    ["Content Strategy", "Marketing"],
-  ];
-
-  const sampleQuestions = [
-    {
-      q: "Which principle is most important when structuring a reusable component system?",
-      options: [
-        "Consistent tokens, clear variants, and accessible states",
-        "Using inline styles for every element",
-        "Avoiding documentation until after launch",
-      ],
-    },
-    {
-      q: "When collaborating with a client on milestone deliverables, what is the best practice?",
-      options: [
-        "Share early checkpoints and align on acceptance criteria",
-        "Wait until the final deadline to show progress",
-        "Skip scope confirmation",
-      ],
-    },
-  ];
-
-  const submitAssessment = async () => {
-    if (!activeSkill) return;
+  const handleSubmitAssessment = async () => {
+    if (!activeAssessment) return;
     setSubmitting(true);
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session) {
-        await fetch("/api/overview", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            action: "submit_verification",
-            skill_name: activeSkill,
-            score: 92,
-            answers: { completed: true },
-          }),
-        });
+      const res = await submitSkillAssessment(activeAssessment.id, answersMap);
+      if (!res.success) {
+        toast(res.error || "Could not submit assessment");
+        return;
       }
-      await onRefresh?.();
-      toast(`${activeSkill} assessment completed — Verified (92%)!`);
+      const score = Number(res.score ?? 0);
+      const isVerified = Boolean(res.isVerified);
+      setLastResult({
+        title: activeAssessment.title,
+        skill: activeAssessment.skill?.name || activeAssessment.title,
+        score,
+        isVerified,
+        passingScore: Number(activeAssessment.passing_score || 80),
+      });
+      setActiveAssessment(null);
+      await Promise.all([loadAssessments(), onRefresh?.()]);
+      toast(
+        isVerified
+          ? `Passed! Earned verified badge (${score}%)`
+          : `Score: ${score}%. Reach ${activeAssessment.passing_score || 80}% to pass.`
+      );
     } catch {
       toast("Could not submit assessment");
     } finally {
       setSubmitting(false);
-      setActiveSkill(null);
-      setQIndex(0);
     }
   };
+
+  const currentQuestion = activeAssessment?.questions?.[qIndex];
+  const currentOptions: string[] = Array.isArray(currentQuestion?.options)
+    ? currentQuestion.options
+    : [];
+  const selectedAnswerForCurrent = currentQuestion ? answersMap[currentQuestion.id] : undefined;
 
   return (
     <main className="page">
       <PageTitle
-        eyebrow="SKILL VERIFICATION"
-        title="Turn your skills into trusted signals"
-        text="Complete short prototype assessments to demonstrate practical knowledge."
+        eyebrow="SKILL ASSESSMENT & VERIFICATION"
+        title="Verify your skills and earn badges"
+        text="Answer 5 practical questions per skill. Score 80% or higher to earn a verified badge on your Skill Passport."
+        action={
+          onOpenPassport && (
+            <button className="btn btn-white" onClick={onOpenPassport}>
+              <Award size={18} /> View my Skill Passport
+            </button>
+          )
+        }
       />
-      <div className="prototype-note">
-        <ShieldCheck />
-        <div>
-          <b>Prototype demonstration only</b>
-          <span>These sample assessments do not issue actual professional certifications.</span>
+
+      {loading ? (
+        <div className="panel" style={{ padding: 48, textAlign: "center", color: "#597285" }}>
+          Loading skill assessments…
         </div>
-      </div>
-      <div className="verification-grid">
-        {catalogAssessments.map(([skillName, domain]) => {
-          const score = verifMap.get(skillName.toLowerCase()) || 0;
-          const isVerified = score > 0;
-          const tone = isVerified ? "green" : "blue";
-          return (
-            <div className="panel verification-card" key={skillName}>
-              <div className={`verify-icon ${tone}`}>
-                <ShieldCheck />
-              </div>
-              <Badge tone={tone}>{isVerified ? "Verified" : "Available"}</Badge>
-              <h3>{skillName}</h3>
-              <span>{domain}</span>
-              {isVerified ? (
-                <>
-                  <div className="score">
-                    <strong>{score}%</strong>
-                    <small>Assessment score</small>
-                  </div>
-                  <button
-                    className="btn btn-white full"
-                    onClick={() => toast(`${skillName}: Verified with ${score}% score`)}
-                  >
-                    View results
-                  </button>
-                </>
-              ) : (
-                <>
-                  <p>Short assessment · Approx. 5 minutes</p>
+      ) : assessments.length === 0 ? (
+        <div className="panel empty-state-box">
+          <b>No active skill assessments available right now</b>
+          <p>Please check back shortly or contact your administrator.</p>
+        </div>
+      ) : (
+        <div className="verification-grid">
+          {assessments.map((a) => {
+            const sub = a.submission;
+            const isVerified = sub?.status === "verified";
+            const wasAttempted = Boolean(sub);
+            const score = Number(sub?.score ?? 0);
+            const skillName = a.skill?.name || a.title;
+            const tone = isVerified ? "green" : wasAttempted ? "amber" : "blue";
+
+            return (
+              <div className="panel verification-card" key={a.id}>
+                <div className={`verify-icon ${tone}`}>
+                  <ShieldCheck />
+                </div>
+                <Badge tone={tone}>
+                  {isVerified ? "Verified Badge" : wasAttempted ? "Needs Retake" : "Ready to Take"}
+                </Badge>
+                <h3>{skillName}</h3>
+                <span>{a.title}</span>
+                {a.description && <p>{a.description}</p>}
+                <div className="verify-meta-line">
+                  <span>{a.questions?.length || a.question_count} questions</span>
+                  <span>·</span>
+                  <span>{a.duration_minutes} mins</span>
+                  <span>·</span>
+                  <span>Pass: {Number(a.passing_score || 80)}%</span>
+                </div>
+                {isVerified ? (
+                  <>
+                    <div className="score">
+                      <strong>{score}%</strong>
+                      <small>Verified score</small>
+                    </div>
+                    <button
+                      className="btn btn-white full"
+                      onClick={() => startAssessment(a)}
+                    >
+                      Retake assessment
+                    </button>
+                  </>
+                ) : (
                   <button
                     className="btn btn-primary full"
-                    onClick={() => {
-                      setActiveSkill(skillName);
-                      setQIndex(0);
-                      setSelectedAns(0);
-                    }}
+                    onClick={() => startAssessment(a)}
                   >
-                    Start assessment
+                    {wasAttempted ? `Retake (Last score: ${score}%)` : "Start assessment"}
                   </button>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
-      {activeSkill && (
+      {activeAssessment && currentQuestion && (
         <div className="modal-backdrop">
-          <div className="modal">
-            <button className="modal-close" onClick={() => setActiveSkill(null)}>
+          <div className="modal modal-wide">
+            <button className="modal-close" onClick={() => setActiveAssessment(null)}>
               <X />
             </button>
             <span className="auth-kicker">
-              {activeSkill.toUpperCase()} ASSESSMENT · QUESTION {qIndex + 1} OF{" "}
-              {sampleQuestions.length}
+              {(activeAssessment.skill?.name || activeAssessment.title).toUpperCase()} · QUESTION {qIndex + 1} OF{" "}
+              {activeAssessment.questions.length}
             </span>
-            <h2>{sampleQuestions[qIndex].q}</h2>
-            <div style={{ display: "grid", gap: 10, margin: "16px 0" }}>
-              {sampleQuestions[qIndex].options.map((opt, idx) => (
-                <label
-                  key={opt}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "12px 14px",
-                    borderRadius: 10,
-                    border:
-                      selectedAns === idx
-                        ? "2px solid #087EAD"
-                        : "1px solid #dce7ed",
-                    background: selectedAns === idx ? "#eff6ff" : "white",
-                    cursor: "pointer",
+            <div className="progress" style={{ margin: "10px 0 18px" }}>
+              <i
+                style={{
+                  width: `${Math.round(((qIndex + 1) / activeAssessment.questions.length) * 100)}%`,
+                }}
+              ></i>
+            </div>
+            <h2>{currentQuestion.prompt}</h2>
+            <div className="quiz-options-list">
+              {currentOptions.map((opt, idx) => {
+                const isSelected = selectedAnswerForCurrent === idx;
+                return (
+                  <label
+                    key={`${currentQuestion.id}-${idx}`}
+                    className={`quiz-option-card ${isSelected ? "selected" : ""}`}
+                  >
+                    <input
+                      type="radio"
+                      name={`assess-${currentQuestion.id}`}
+                      checked={isSelected}
+                      onChange={() =>
+                        setAnswersMap((prev) => ({ ...prev, [currentQuestion.id]: idx }))
+                      }
+                    />
+                    <span>{opt}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="quiz-nav-actions">
+              <button
+                type="button"
+                className="btn btn-white"
+                disabled={qIndex === 0}
+                onClick={() => setQIndex((prev) => Math.max(0, prev - 1))}
+              >
+                <ArrowLeft size={17} /> Previous
+              </button>
+              {qIndex + 1 < activeAssessment.questions.length ? (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  disabled={selectedAnswerForCurrent === undefined}
+                  onClick={() => setQIndex((prev) => prev + 1)}
+                >
+                  Next question <ArrowRight size={17} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-lg"
+                  disabled={submitting || selectedAnswerForCurrent === undefined}
+                  onClick={handleSubmitAssessment}
+                >
+                  {submitting ? "Grading answers..." : "Submit assessment"}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {lastResult && (
+        <div className="modal-backdrop">
+          <div className="modal">
+            <button className="modal-close" onClick={() => setLastResult(null)}>
+              <X />
+            </button>
+            <span className="auth-kicker">ASSESSMENT RESULT</span>
+            <h2>
+              {lastResult.isVerified
+                ? `${lastResult.skill} Verified!`
+                : `Keep practicing ${lastResult.skill}`}
+            </h2>
+            <p style={{ fontSize: 15, color: "#486779", lineHeight: 1.6, marginBottom: 18 }}>
+              You scored <strong>{lastResult.score}%</strong> (passing score is{" "}
+              {lastResult.passingScore}%).{" "}
+              {lastResult.isVerified
+                ? "Your verified skill badge is now displayed on your Skill Passport."
+                : "You can review your knowledge and retake the assessment anytime."}
+            </p>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button
+                className="btn btn-white full"
+                onClick={() => setLastResult(null)}
+              >
+                Close
+              </button>
+              {onOpenPassport && (
+                <button
+                  className="btn btn-primary full"
+                  onClick={() => {
+                    setLastResult(null);
+                    onOpenPassport();
                   }}
                 >
-                  <input
-                    type="radio"
-                    name="assess-opt"
-                    checked={selectedAns === idx}
-                    onChange={() => setSelectedAns(idx)}
-                  />
-                  <span style={{ fontSize: 14, color: "#102a43" }}>{opt}</span>
-                </label>
-              ))}
+                  View Skill Passport
+                </button>
+              )}
             </div>
-            <button
-              className="btn btn-primary full btn-lg"
-              disabled={submitting}
-              onClick={() => {
-                if (qIndex + 1 < sampleQuestions.length) {
-                  setQIndex(qIndex + 1);
-                  setSelectedAns(0);
-                } else {
-                  submitAssessment();
-                }
-              }}
-            >
-              {qIndex + 1 < sampleQuestions.length
-                ? "Next question"
-                : submitting
-                ? "Submitting..."
-                : "Submit assessment"}
-            </button>
           </div>
         </div>
       )}
@@ -4752,6 +5099,60 @@ function BusinessApp({
   const [contracts, setContracts] = useState<any[]>([]);
   const [overview, setOverview] = useState<any | null>(null);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDesc, setEditDesc] = useState("");
+  const [editBudget, setEditBudget] = useState("");
+  const [editSetup, setEditSetup] = useState<"remote" | "onsite" | "hybrid">("remote");
+  const [editStatus, setEditStatus] = useState<"published" | "draft" | "closed">("published");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const openEditModal = (p: Project) => {
+    setEditingProject(p);
+    setEditTitle(p.title);
+    setEditDesc(p.description);
+    setEditBudget(String(p.budget));
+    setEditSetup((String(p.workSetup || "remote").toLowerCase() as any) || "remote");
+    setEditStatus((p.status === "draft" || p.status === "closed" ? p.status : "published") as any);
+  };
+
+  const saveListingEdits = async () => {
+    if (!editingProject) return;
+    setSavingEdit(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch("/api/listings", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          id: editingProject.id,
+          title: editTitle.trim(),
+          description: editDesc.trim(),
+          budget: Number(editBudget) || 500,
+          work_setup: editSetup,
+          status: editStatus,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data.error || "Could not update project");
+        return;
+      }
+      setEditingProject(null);
+      await Promise.all([loadBusinessData(), onRefreshProjects?.()]);
+      toast("Project listing updated");
+    } catch {
+      toast("Could not update project");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   useEffect(() => {
     setSelectedProject(null);
@@ -4893,7 +5294,7 @@ function BusinessApp({
         <PageTitle
           eyebrow="PROJECTS"
           title="Your project listings"
-          text="Manage opportunities and track performance."
+          text="Create, edit, publish, or close your project postings."
           action={
             <button className="btn btn-primary" onClick={() => setActive("Post a Project")}>
               <Plus /> Post a project
@@ -4903,33 +5304,115 @@ function BusinessApp({
         <div className="project-grid">
           {posted.length > 0 ? (
             posted.map((p) => (
-              <ProjectCard
-                key={p.id}
-                project={p}
-                onClick={() => setSelectedProject(p)}
-                saved={false}
-                onSave={() => {}}
-              />
+              <div key={p.id} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <ProjectCard
+                  project={p}
+                  onClick={() => setSelectedProject(p)}
+                  saved={false}
+                  onSave={() => {}}
+                />
+                <div style={{ display: "flex", gap: 10 }}>
+                  <button
+                    type="button"
+                    className="btn btn-white full"
+                    onClick={() => openEditModal(p)}
+                  >
+                    <PenLine size={16} /> Edit listing
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-white full"
+                    onClick={async () => {
+                      const {
+                        data: { session },
+                      } = await supabase.auth.getSession();
+                      if (!session) return;
+                      const nextStatus = p.status === "closed" ? "published" : "closed";
+                      const res = await fetch("/api/listings", {
+                        method: "PATCH",
+                        headers: {
+                          "Content-Type": "application/json",
+                          Authorization: `Bearer ${session.access_token}`,
+                        },
+                        body: JSON.stringify({ id: p.id, status: nextStatus }),
+                      });
+                      if (res.ok) {
+                        await Promise.all([loadBusinessData(), onRefreshProjects?.()]);
+                        toast(nextStatus === "closed" ? "Listing closed" : "Listing reopened");
+                      } else {
+                        const err = await res.json();
+                        toast(err.error || "Could not update listing status");
+                      }
+                    }}
+                  >
+                    {p.status === "closed" ? "Reopen" : "Close listing"}
+                  </button>
+                </div>
+              </div>
             ))
           ) : (
-            <div
-              style={{
-                textAlign: "center",
-                padding: "48px 24px",
-                color: "#627d98",
-                background: "white",
-                borderRadius: 16,
-                border: "1px dashed #dce7ed",
-                gridColumn: "1 / -1",
-              }}
-            >
-              <p style={{ marginBottom: 16 }}>You haven&apos;t posted any project listings yet.</p>
+            <div className="empty-state-box" style={{ gridColumn: "1 / -1" }}>
+              <b>You haven&apos;t posted any project listings yet</b>
+              <p>Create your first project brief to start receiving proposals from verified talents.</p>
               <button className="btn btn-primary" onClick={() => setActive("Post a Project")}>
                 <Plus /> Post a project
               </button>
             </div>
           )}
         </div>
+
+        {editingProject && (
+          <div className="modal-backdrop">
+            <div className="modal modal-wide">
+              <button className="modal-close" onClick={() => setEditingProject(null)}>
+                <X />
+              </button>
+              <span className="auth-kicker">EDIT PROJECT LISTING</span>
+              <h2>Update project details</h2>
+              <label>
+                Project title
+                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} />
+              </label>
+              <label>
+                Project description
+                <textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={4} />
+              </label>
+              <div className="form-grid">
+                <label>
+                  Budget (PHP)
+                  <input
+                    type="number"
+                    value={editBudget}
+                    onChange={(e) => setEditBudget(e.target.value)}
+                  />
+                </label>
+                <label>
+                  Work setup
+                  <select value={editSetup} onChange={(e) => setEditSetup(e.target.value as any)}>
+                    <option value="remote">Remote</option>
+                    <option value="hybrid">Hybrid</option>
+                    <option value="onsite">Onsite</option>
+                  </select>
+                </label>
+              </div>
+              <label>
+                Listing visibility
+                <select value={editStatus} onChange={(e) => setEditStatus(e.target.value as any)}>
+                  <option value="published">Published (Open for applicants)</option>
+                  <option value="draft">Draft (Hidden)</option>
+                  <option value="closed">Closed</option>
+                </select>
+              </label>
+              <button
+                className="btn btn-primary full btn-lg"
+                disabled={savingEdit}
+                onClick={saveListingEdits}
+              >
+                {savingEdit ? "Saving changes..." : "Save project changes"}
+              </button>
+            </div>
+          </div>
+        )}
       </main>
     );
   return (
@@ -5065,28 +5548,40 @@ function BusinessOverview({
           <div className="panel-title">
             <b>Project performance</b>
             <button onClick={() => onNavigate("Analytics")}>
-              This year <ChevronDown />
+              View analytics <ArrowRight />
             </button>
           </div>
-          <div className="donut-wrap">
-            <div className="donut">
-              <span>
-                <b>{posted.length > 0 ? Math.round((completedCount / posted.length) * 100) : 0}%</b>
-                completion
-              </span>
-            </div>
-            <div>
-              <span>
-                <i className="green-dot"></i> Completed <b>{completedCount}</b>
-              </span>
-              <span>
-                <i className="blue-dot"></i> Active <b>{activeCount}</b>
-              </span>
-              <span>
-                <i className="gray-dot"></i> Draft <b>{draftCount}</b>
-              </span>
-            </div>
-          </div>
+          {(() => {
+            const total = Math.max(1, completedCount + activeCount + draftCount);
+            const compDeg = Math.round((completedCount / total) * 360);
+            const actDeg = compDeg + Math.round((activeCount / total) * 360);
+            const pct = posted.length > 0 ? Math.round((completedCount / posted.length) * 100) : 0;
+            const bg =
+              completedCount + activeCount + draftCount === 0
+                ? "conic-gradient(#e6eff4 0deg 360deg)"
+                : `conic-gradient(#16a34a 0deg ${compDeg}deg, #087ead ${compDeg}deg ${actDeg}deg, #cbdbe5 ${actDeg}deg 360deg)`;
+            return (
+              <div className="donut-wrap">
+                <div className="donut" style={{ background: bg }}>
+                  <span>
+                    <b>{pct}%</b>
+                    completion
+                  </span>
+                </div>
+                <div>
+                  <span>
+                    <i className="green-dot"></i> Completed <b>{completedCount}</b>
+                  </span>
+                  <span>
+                    <i className="blue-dot"></i> Active <b>{activeCount}</b>
+                  </span>
+                  <span>
+                    <i className="gray-dot"></i> Draft <b>{draftCount}</b>
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
           <div className="performance-note">
             <TrendingUp />
             <span>
@@ -5771,19 +6266,52 @@ function ApplicantBoard({
                         </button>
                       )}
                       {column !== "Accepted" && (
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          style={{ flex: 1, padding: "6px 8px", fontSize: 11 }}
-                          onClick={() => move(app, column)}
-                        >
-                          {column === "New"
-                            ? "Review"
-                            : column === "Review"
-                            ? "Shortlist"
-                            : "Accept"}{" "}
-                          <ArrowRight size={12} />
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            className="btn btn-white"
+                            style={{ padding: "6px 10px", fontSize: 12, color: "#dc2626" }}
+                            onClick={async () => {
+                              const {
+                                data: { session },
+                              } = await supabase.auth.getSession();
+                              if (!session) return;
+                              const res = await fetch("/api/applications", {
+                                method: "PATCH",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  Authorization: `Bearer ${session.access_token}`,
+                                },
+                                body: JSON.stringify({
+                                  application_id: app.id,
+                                  status: "rejected",
+                                }),
+                              });
+                              if (res.ok) {
+                                toast(`Declined ${app.talent.name}'s application`);
+                                await onRefresh?.();
+                              } else {
+                                const err = await res.json();
+                                toast(err.error || "Could not reject application");
+                              }
+                            }}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            style={{ flex: 1, padding: "6px 10px", fontSize: 12 }}
+                            onClick={() => move(app, column)}
+                          >
+                            {column === "New"
+                              ? "Review"
+                              : column === "Review"
+                              ? "Shortlist"
+                              : "Accept"}{" "}
+                            <ArrowRight size={13} />
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -6054,22 +6582,30 @@ function Analytics({
     applications.length ||
     posted.reduce((sum, p) => sum + Number(p.applicants || 0), 0);
 
-  const barHeights = [
-    4,
-    4,
-    4,
-    4,
-    4,
-    4,
-    4,
-    4,
-    4,
-    4,
-    totalProjects > 0 ? Math.min(120, Math.max(16, totalProjects * 18)) : 4,
-    totalApplicantCount > 0
-      ? Math.min(130, Math.max(24, totalApplicantCount * 28))
-      : 4,
-  ];
+  const monthlyBuckets = useMemo(() => {
+    const now = new Date();
+    const buckets: { label: string; count: number }[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const label = d.toLocaleDateString("en-US", { month: "short" });
+      const count = applications.filter((a) => {
+        if (!a.submitted_at) return false;
+        const ad = new Date(a.submitted_at);
+        return ad.getFullYear() === d.getFullYear() && ad.getMonth() === d.getMonth();
+      }).length;
+      buckets.push({ label, count });
+    }
+    return buckets;
+  }, [applications]);
+  const maxMonthCount = Math.max(1, ...monthlyBuckets.map((b) => b.count));
+
+  const statusTotal = Math.max(1, completedCount + activeCount + draftCount);
+  const compDeg = Math.round((completedCount / statusTotal) * 360);
+  const actDeg = compDeg + Math.round((activeCount / statusTotal) * 360);
+  const donutBg =
+    completedCount + activeCount + draftCount === 0
+      ? "conic-gradient(#e6eff4 0deg 360deg)"
+      : `conic-gradient(#16a34a 0deg ${compDeg}deg, #087ead ${compDeg}deg ${actDeg}deg, #cbdbe5 ${actDeg}deg 360deg)`;
 
   return (
     <main className="page">
@@ -6115,26 +6651,25 @@ function Analytics({
               <b>Applications over time</b>
               <span>Last 6 months ({totalApplicantCount} total)</span>
             </div>
-            <button>
-              6 months <ChevronDown />
-            </button>
+            <Badge tone="blue">Real submission dates</Badge>
           </div>
           <div className="bar-chart">
-            {barHeights.map((n, i) => (
-              <div key={i}>
-                <i style={{ height: `${n}px`, opacity: n > 4 ? 1 : 0.25 }}></i>
-                <span>
-                  {i % 2 === 0 ? ["Jun", "Jul", "Aug", "Sep", "Oct", "Nov"][i / 2] : ""}
-                </span>
-              </div>
-            ))}
+            {monthlyBuckets.map((b) => {
+              const h = b.count > 0 ? Math.max(24, Math.round((b.count / maxMonthCount) * 140)) : 8;
+              return (
+                <div key={b.label}>
+                  <i style={{ height: `${h}px`, opacity: b.count > 0 ? 1 : 0.3 }} title={`${b.label}: ${b.count} applications`}></i>
+                  <span>{b.label} ({b.count})</span>
+                </div>
+              );
+            })}
           </div>
         </section>
         <section className="panel">
           <div className="panel-title">
             <b>Project status</b>
           </div>
-          <div className="large-donut">
+          <div className="large-donut" style={{ background: donutBg }}>
             <span>
               <b>{totalProjects}</b>projects
             </span>
@@ -6156,50 +6691,80 @@ function Analytics({
   );
 }
 
-function AdminApp({ active, setActive }: { active: string; setActive: (s: string) => void }) {
+function AdminApp({
+  active,
+  setActive,
+  toast,
+}: {
+  active: string;
+  setActive: (s: string) => void;
+  toast: (s: string) => void;
+}) {
   const [adminData, setAdminData] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const loadAdmin = async () => {
+    setLoading(true);
+    const data = await fetchAdminData();
+    if (data) setAdminData(data);
+    setLoading(false);
+  };
 
   useEffect(() => {
-    fetchOverviewData().then((d) => {
-      if (d?.admin) setAdminData(d.admin);
-    });
+    loadAdmin();
   }, [active]);
 
   if (active === "User Management")
     return (
-      <AdminTable
+      <AdminManagementView
+        mode="users"
         title="User management"
-        text="Review and manage platform accounts."
-        rows={adminData?.userRows || []}
+        text="Review registered accounts and activate or suspend access when needed."
+        data={adminData?.users || []}
+        loading={loading}
+        onRefresh={loadAdmin}
+        toast={toast}
       />
     );
   if (active === "Skill Verifications")
     return (
-      <AdminTable
+      <AdminManagementView
+        mode="verifications"
         title="Skill verification requests"
-        text="Review prototype assessment submissions."
-        rows={adminData?.verificationRows || []}
+        text="Review assessment submissions and approve or reject verified skill badges."
+        data={adminData?.verifications || []}
+        loading={loading}
+        onRefresh={loadAdmin}
+        toast={toast}
       />
     );
   if (active === "Project Moderation")
     return (
-      <AdminTable
+      <AdminManagementView
+        mode="projects"
         title="Project moderation"
-        text="Ensure listings meet GAWA community standards."
-        rows={adminData?.moderationRows || []}
+        text="Approve, feature, or hide submitted project listings before they appear publicly."
+        data={adminData?.projects || []}
+        loading={loading}
+        onRefresh={loadAdmin}
+        toast={toast}
       />
     );
   if (active === "Transactions") return <Payments />;
   if (active === "Platform Analytics") return <Analytics />;
   if (active === "Reviews & Reports")
     return (
-      <AdminTable
+      <AdminManagementView
+        mode="reports"
         title="Reviews and reports"
-        text="Review community feedback and resolve reported activity."
-        rows={adminData?.reportRows || []}
+        text="Investigate reported issues and resolve or dismiss open disputes."
+        data={adminData?.reports || []}
+        loading={loading}
+        onRefresh={loadAdmin}
+        toast={toast}
       />
     );
-  if (active === "Settings") return <SettingsPage role="admin" toast={() => {}} />;
+  if (active === "Settings") return <SettingsPage role="admin" toast={toast} />;
   return <AdminOverview onNavigate={setActive} adminData={adminData} />;
 }
 
@@ -6862,7 +7427,7 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
                     <div>
                       <b>{displayName || profile?.display_name || "GAWA Member"}</b>
                       <span>
-                        Stored in Supabase bucket <code>gawa-avatars-banners</code> · JPG, PNG, WebP or GIF (max 10 MB)
+                        Upload a JPG, PNG, WebP, or GIF image (up to 10 MB).
                       </span>
                     </div>
                   </div>
@@ -7059,9 +7624,9 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
                   color: "#486581",
                 }}
               >
-                <b>Security Architecture & Session State</b>
-                <p style={{ margin: "6px 0 0 0", fontSize: 12, lineHeight: 1.5 }}>
-                  Sessions are governed by server-side HttpOnly cookies with CSRF validation. State-changing requests require cryptographic token verification. Passwords and OTP verification hashes are never exposed to browser memory.
+                <b>Account Protection</b>
+                <p style={{ margin: "6px 0 0 0", fontSize: 13, lineHeight: 1.55 }}>
+                  Your login session is protected automatically. Always sign out when using a shared computer or public device.
                 </p>
               </div>
             </>
@@ -7102,12 +7667,21 @@ function AdminOverview({
   onNavigate: (s: string) => void;
   adminData?: any;
 }) {
-  const usersCount = adminData?.usersCount ?? 0;
-  const talentsCount = adminData?.talentsCount ?? 0;
-  const businessesCount = adminData?.businessesCount ?? 0;
-  const activeProjectsCount = adminData?.activeProjectsCount ?? 0;
-  const totalProjectValue = adminData?.totalProjectValue ?? 0;
-  const activities: string[][] = adminData?.auditActivity || [];
+  const m = adminData?.metrics || {};
+  const usersCount = m.totalUsers ?? 0;
+  const talentsCount = m.talentsCount ?? 0;
+  const businessesCount = m.businessesCount ?? 0;
+  const activeProjectsCount = m.activeProjectsCount ?? 0;
+  const totalProjectValue = m.totalProjectValue ?? 0;
+  const activities: any[] = adminData?.auditEvents || [];
+  const projects: any[] = adminData?.projects || [];
+
+  const approvedCount = projects.filter((p) => p.moderationStatus === "approved").length;
+  const pendingCount = projects.filter((p) => p.moderationStatus === "pending").length;
+  const hiddenOrRejectedCount = projects.filter(
+    (p) => p.moderationStatus === "hidden" || p.moderationStatus === "rejected"
+  ).length;
+  const maxBar = Math.max(1, usersCount, talentsCount, businessesCount, activeProjectsCount, approvedCount);
 
   return (
     <main className="page admin-page">
@@ -7115,10 +7689,10 @@ function AdminOverview({
         <div>
           <span>PLATFORM ADMINISTRATION</span>
           <h1>Platform overview</h1>
-          <p>Monitor the health, growth, and trust of the GAWA community.</p>
+          <p>Review accounts, verify skills, moderate project listings, and keep the community safe.</p>
         </div>
         <Badge tone="green">
-          <Activity /> All systems operational
+          <Activity /> Live database connected
         </Badge>
       </div>
       <div className="admin-stat-grid">
@@ -7127,90 +7701,85 @@ function AdminOverview({
           tone="blue"
           value={String(usersCount)}
           label="Registered users"
-          delta="all time"
+          delta="total accounts"
         />
         <Stat
           icon={GraduationCap}
           tone="purple"
           value={String(talentsCount)}
-          label="Active talents"
-          delta="all time"
+          label="Talents"
+          delta="active members"
         />
         <Stat
           icon={Building2}
           tone="green"
           value={String(businessesCount)}
           label="Businesses"
-          delta="all time"
+          delta="project owners"
         />
         <Stat
           icon={BriefcaseBusiness}
           tone="amber"
           value={String(activeProjectsCount)}
           label="Active projects"
-          delta={`${php(totalProjectValue)} total value`}
+          delta={`${php(totalProjectValue)} total budget`}
         />
       </div>
       <div className="admin-grid">
         <section className="panel chart-panel">
           <div className="panel-title">
             <div>
-              <b>Platform growth</b>
-              <span>Talent and business registrations</span>
+              <b>Community breakdown</b>
+              <span>Real counts across users, projects, and moderation status</span>
             </div>
-            <button>
-              Last 12 months <ChevronDown />
+            <button onClick={() => onNavigate("Platform Analytics")}>
+              View analytics <ArrowRight />
             </button>
           </div>
-          <div className="line-chart">
-            <svg viewBox="0 0 600 210" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="area" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0" stopColor="#22B8E6" stopOpacity=".28" />
-                  <stop offset="1" stopColor="#22B8E6" stopOpacity="0" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M0 180 C50 170 60 145 110 150 S180 120 220 125 S290 78 340 98 S410 65 450 70 S520 30 600 28 L600 210 L0 210Z"
-                fill="url(#area)"
-              />
-              <path
-                d="M0 180 C50 170 60 145 110 150 S180 120 220 125 S290 78 340 98 S410 65 450 70 S520 30 600 28"
-                fill="none"
-                stroke="#087EAD"
-                strokeWidth="4"
-              />
-            </svg>
-            <div>
-              <span>Jun</span>
-              <span>Aug</span>
-              <span>Oct</span>
-              <span>Dec</span>
-              <span>Feb</span>
-              <span>Apr</span>
-            </div>
+          <div className="admin-breakdown-bars">
+            {[
+              ["Registered Users", usersCount, "blue"],
+              ["Talent Accounts", talentsCount, "purple"],
+              ["Business Profiles", businessesCount, "green"],
+              ["Approved Projects", approvedCount, "blue"],
+              ["Pending Moderation", pendingCount, "amber"],
+              ["Hidden / Rejected", hiddenOrRejectedCount, "red"],
+            ].map(([label, val, tone]) => (
+              <div className="breakdown-row" key={String(label)}>
+                <div className="breakdown-label">
+                  <b>{label}</b>
+                  <span>{val}</span>
+                </div>
+                <div className="progress">
+                  <i
+                    className={`tone-${tone}`}
+                    style={{ width: `${Math.max(4, Math.round((Number(val) / maxBar) * 100))}%` }}
+                  ></i>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
         <section className="panel trust-queue">
           <div className="panel-title">
             <b>Trust & safety queue</b>
-            <button onClick={() => onNavigate("Project Moderation")}>View all</button>
+            <button onClick={() => onNavigate("Project Moderation")}>Open queue</button>
           </div>
           {[
             [
               ShieldCheck,
               "Skill verifications",
-              `${adminData?.pendingVerifications ?? 0} pending`,
+              `${m.pendingVerifications ?? 0} pending review`,
               "blue",
             ],
             [
               FileCheck2,
-              "Project reviews",
-              `${adminData?.pendingModeration ?? 0} pending`,
+              "Project moderation",
+              `${m.pendingModeration ?? 0} pending approval`,
               "amber",
             ],
-            [Star, "Reports & disputes", `${adminData?.openReports ?? 0} open`, "red"],
-            [UserCheck, "Business checks", "0 pending", "purple"],
+            [Star, "Reports & disputes", `${m.openReportsCount ?? 0} open`, "red"],
+            [Users, "User accounts", `${usersCount} total users`, "purple"],
           ].map(([I, l, n, t]) => (
             <button
               key={l as string}
@@ -7220,6 +7789,8 @@ function AdminOverview({
                     ? "Skill Verifications"
                     : l === "Reports & disputes"
                     ? "Reviews & Reports"
+                    : l === "User accounts"
+                    ? "User Management"
                     : "Project Moderation"
                 )
               }
@@ -7239,23 +7810,26 @@ function AdminOverview({
           <div className="panel-title">
             <div>
               <b>Recent platform activity</b>
-              <span>Latest notable events</span>
+              <span>Latest recorded actions across the platform</span>
             </div>
-            <button onClick={() => onNavigate("Project Moderation")}>View audit log</button>
+            <button onClick={() => onNavigate("Project Moderation")}>Moderate projects</button>
           </div>
           {activities.length > 0 ? (
-            activities.map((r, idx) => (
-              <div className="data-row" key={idx}>
+            activities.slice(0, 6).map((ev: any) => (
+              <div className="data-row" key={ev.id}>
                 <div>
-                  <b>{r[0]}</b>
-                  <span>{r[1]}</span>
+                  <b>{String(ev.action || "event").replace(/\./g, " ")}</b>
+                  <span>
+                    {ev.actorName || "Member"} · {formatRelativeTime(ev.createdAt)}
+                  </span>
                 </div>
-                <Badge tone={r[3]}>{r[2]}</Badge>
+                <Badge tone="blue">{ev.entityTable}</Badge>
               </div>
             ))
           ) : (
-            <div style={{ padding: "32px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
-              No platform activity recorded yet. Events will appear here as the community grows.
+            <div className="empty-state-box">
+              <b>No platform activity recorded yet</b>
+              <p>Actions such as new listings, applications, and approvals will appear here.</p>
             </div>
           )}
         </section>
@@ -7264,24 +7838,40 @@ function AdminOverview({
   );
 }
 
-function AdminTable({ title, text, rows }: { title: string; text: string; rows: string[][] }) {
+function AdminManagementView({
+  mode,
+  title,
+  text,
+  data,
+  loading,
+  onRefresh,
+  toast,
+}: {
+  mode: "users" | "verifications" | "projects" | "reports";
+  title: string;
+  text: string;
+  data: any[];
+  loading: boolean;
+  onRefresh: () => Promise<void>;
+  toast: (s: string) => void;
+}) {
   const [search, setSearch] = useState("");
-  const filteredRows = rows.filter((r) =>
-    r.join(" ").toLowerCase().includes(search.toLowerCase())
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const filtered = data.filter((item) =>
+    JSON.stringify(item).toLowerCase().includes(search.toLowerCase())
   );
 
-  const exportCsv = () => {
-    const csvRows = [["Name / Record", "Category", "Detail", "Status"], ...filteredRows];
-    const csv = csvRows
-      .map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${title.toLowerCase().replace(/\s+/g, "-")}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const runAction = async (id: string, fn: () => Promise<{ success: boolean; error?: string }>, successMsg: string) => {
+    setBusyId(id);
+    const res = await fn();
+    setBusyId(null);
+    if (!res.success) {
+      toast(res.error || "Action failed");
+      return;
+    }
+    toast(successMsg);
+    await onRefresh();
   };
 
   return (
@@ -7291,8 +7881,8 @@ function AdminTable({ title, text, rows }: { title: string; text: string; rows: 
         title={title}
         text={text}
         action={
-          <button className="btn btn-white" onClick={() => setSearch("")}>
-            <Filter /> Filters
+          <button className="btn btn-white" onClick={() => onRefresh()}>
+            Refresh list
           </button>
         }
       />
@@ -7302,40 +7892,229 @@ function AdminTable({ title, text, rows }: { title: string; text: string; rows: 
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search records…"
+            placeholder="Search by name, title, or status…"
           />
         </div>
-        <button className="btn btn-white" onClick={exportCsv}>
-          Export
-        </button>
+        {search && (
+          <button className="btn btn-white" onClick={() => setSearch("")}>
+            Clear search
+          </button>
+        )}
       </div>
       <section className="panel admin-table">
-        <div className="table-head">
-          <span>Name / Record</span>
-          <span>Category</span>
-          <span>Detail</span>
+        <div className="table-head admin-head-5">
+          <span>{mode === "projects" ? "Project" : mode === "reports" ? "Report" : "Member"}</span>
+          <span>{mode === "users" ? "Role" : mode === "projects" ? "Business" : mode === "verifications" ? "Assessment" : "Reporter"}</span>
+          <span>{mode === "users" ? "Location" : mode === "projects" ? "Budget" : mode === "verifications" ? "Score" : "Details"}</span>
           <span>Status</span>
-          <span></span>
+          <span>Actions</span>
         </div>
-        {filteredRows.length === 0 ? (
-          <div style={{ padding: "36px 16px", textAlign: "center", color: "#627d98", fontSize: 13 }}>
-            No matching records found.
+
+        {loading ? (
+          <div className="empty-state-box">Loading records…</div>
+        ) : filtered.length === 0 ? (
+          <div className="empty-state-box">
+            <b>No matching records</b>
+            <p>Nothing matched your current search or there are no records in this queue yet.</p>
           </div>
         ) : (
-          filteredRows.map((r, i) => (
-            <div className="table-row" key={i}>
-              <span>
-                <Avatar initials={getInitials(r[0])} size="sm" />
-                <b>{r[0]}</b>
-              </span>
-              <span>{r[1]}</span>
-              <span>{r[2]}</span>
-              <Badge tone={r[3] === "Pending" ? "amber" : "green"}>{r[3]}</Badge>
-              <button>
-                <MoreHorizontal />
-              </button>
-            </div>
-          ))
+          filtered.map((item) => {
+            const isBusy = busyId === item.id;
+            if (mode === "users") {
+              const isActive = item.status === "active";
+              return (
+                <div className="table-row admin-row-5" key={item.id}>
+                  <span>
+                    <Avatar initials={getInitials(item.displayName)} size="sm" />
+                    <b>{item.displayName}</b>
+                  </span>
+                  <span style={{ textTransform: "capitalize" }}>{item.role}</span>
+                  <span>{item.location || "Philippines"}</span>
+                  <Badge tone={isActive ? "green" : "red"}>{item.status}</Badge>
+                  <div className="table-action-btns">
+                    {isActive ? (
+                      <button
+                        className="btn btn-white btn-sm"
+                        disabled={isBusy}
+                        onClick={() =>
+                          runAction(
+                            item.id,
+                            () => toggleUserStatusAction(item.id, "suspended", "Suspended by admin"),
+                            `${item.displayName} suspended`
+                          )
+                        }
+                      >
+                        Suspend
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={isBusy}
+                        onClick={() =>
+                          runAction(
+                            item.id,
+                            () => toggleUserStatusAction(item.id, "active"),
+                            `${item.displayName} reactivated`
+                          )
+                        }
+                      >
+                        Activate
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+
+            if (mode === "verifications") {
+              const tone =
+                item.status === "verified" ? "green" : item.status === "rejected" ? "red" : "amber";
+              return (
+                <div className="table-row admin-row-5" key={item.id}>
+                  <span>
+                    <Avatar initials={getInitials(item.talentName)} size="sm" />
+                    <b>{item.talentName}</b>
+                  </span>
+                  <span>{item.skillName}</span>
+                  <span>{item.score != null ? `${item.score}%` : "Submitted"}</span>
+                  <Badge tone={tone}>{item.status}</Badge>
+                  <div className="table-action-btns">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={isBusy || item.status === "verified"}
+                      onClick={() =>
+                        runAction(
+                          item.id,
+                          () => reviewVerificationAction(item.id, "verified"),
+                          `Verified ${item.talentName}'s ${item.skillName}`
+                        )
+                      }
+                    >
+                      Approve
+                    </button>
+                    <button
+                      className="btn btn-white btn-sm"
+                      disabled={isBusy || item.status === "rejected"}
+                      onClick={() =>
+                        runAction(
+                          item.id,
+                          () => reviewVerificationAction(item.id, "rejected", "Please retake the assessment."),
+                          `Rejected submission`
+                        )
+                      }
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            if (mode === "projects") {
+              const tone =
+                item.moderationStatus === "approved"
+                  ? "green"
+                  : item.moderationStatus === "pending"
+                  ? "amber"
+                  : "red";
+              return (
+                <div className="table-row admin-row-5" key={item.id}>
+                  <span>
+                    <Avatar initials={getInitials(item.title)} size="sm" />
+                    <b>{item.title}</b>
+                  </span>
+                  <span>{item.businessName}</span>
+                  <span>{php(Number(item.budget || 0))}</span>
+                  <Badge tone={tone}>
+                    {item.moderationStatus}
+                    {item.isFeatured ? " · Featured" : ""}
+                  </Badge>
+                  <div className="table-action-btns">
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={isBusy}
+                      onClick={() =>
+                        runAction(
+                          item.id,
+                          () => moderateListingAction(item.id, "approved", !item.isFeatured),
+                          item.moderationStatus === "approved"
+                            ? item.isFeatured
+                              ? "Removed featured tag"
+                              : "Project featured"
+                            : "Project approved"
+                        )
+                      }
+                    >
+                      {item.moderationStatus === "approved"
+                        ? item.isFeatured
+                          ? "Unfeature"
+                          : "Feature"
+                        : "Approve"}
+                    </button>
+                    <button
+                      className="btn btn-white btn-sm"
+                      disabled={isBusy}
+                      onClick={() =>
+                        runAction(
+                          item.id,
+                          () => moderateListingAction(item.id, "hidden", false),
+                          "Project hidden"
+                        )
+                      }
+                    >
+                      Hide
+                    </button>
+                  </div>
+                </div>
+              );
+            }
+
+            const repTone =
+              item.status === "resolved"
+                ? "green"
+                : item.status === "dismissed"
+                ? "blue"
+                : "amber";
+            return (
+              <div className="table-row admin-row-5" key={item.id}>
+                <span>
+                  <Avatar initials={getInitials(item.reason)} size="sm" />
+                  <b>{item.reason}</b>
+                </span>
+                <span>{item.reporterName}</span>
+                <span>{item.details || "No extra details"}</span>
+                <Badge tone={repTone}>{item.status}</Badge>
+                <div className="table-action-btns">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={isBusy || item.status === "resolved"}
+                    onClick={() =>
+                      runAction(
+                        item.id,
+                        () => resolveReportAction(item.id, "resolved", "Reviewed and resolved by admin"),
+                        "Report marked resolved"
+                      )
+                    }
+                  >
+                    Resolve
+                  </button>
+                  <button
+                    className="btn btn-white btn-sm"
+                    disabled={isBusy || item.status === "dismissed"}
+                    onClick={() =>
+                      runAction(
+                        item.id,
+                        () => resolveReportAction(item.id, "dismissed", "Dismissed after review"),
+                        "Report dismissed"
+                      )
+                    }
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            );
+          })
         )}
       </section>
     </main>
@@ -7477,7 +8256,7 @@ export default function App() {
                 onRefreshProjects={refreshProjects}
               />
             ) : (
-              <AdminApp active={active} setActive={setActive} />
+              <AdminApp active={active} setActive={setActive} toast={setNotice} />
             )}
           </Shell>
         )}

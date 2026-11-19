@@ -70,7 +70,8 @@ export async function GET(req: NextRequest) {
           status,
           score,
           submitted_at,
-          assessment:verification_assessments(title)
+          expires_at,
+          assessment:verification_assessments(title, skill:catalog_skills(name))
         `)
         .order("created_at", { ascending: false })
         .limit(50),
@@ -126,6 +127,41 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    const totalProjectValue = (allProjects || []).reduce(
+      (sum, p) => sum + Number(p.budget || 0),
+      0
+    );
+
+    const enrichedVerifications = (allVerifications || []).map((v: any) => ({
+      id: v.id,
+      talentId: v.talent_id,
+      talentName: profileMap.get(v.talent_id) || "Talent Member",
+      assessmentTitle: v.assessment?.title || "Skill Assessment",
+      skillName: v.assessment?.skill?.name || v.assessment?.title || "Skill",
+      status: v.status,
+      score: v.score != null ? Number(v.score) : null,
+      submittedAt: v.submitted_at,
+      expiresAt: v.expires_at,
+    }));
+
+    const enrichedReports = (allReports || []).map((rep: any) => ({
+      id: rep.id,
+      reporterName: profileMap.get(rep.reporter_id) || "Member",
+      reason: rep.reason,
+      details: rep.details || "",
+      status: rep.status,
+      createdAt: rep.created_at,
+    }));
+
+    const enrichedAudit = (allAuditEvents || []).map((ev: any) => ({
+      id: ev.id,
+      actorName: profileMap.get(ev.actor_id) || "Member",
+      action: ev.action,
+      entityTable: ev.entity_table,
+      details: ev.details,
+      createdAt: ev.created_at,
+    }));
+
     return jsonResponse({
       metrics: {
         totalUsers: (allProfiles || []).length,
@@ -134,16 +170,20 @@ export async function GET(req: NextRequest) {
         activeProjectsCount: (allProjects || []).filter(
           (p) => p.status === "published" || p.status === "active"
         ).length,
-        openReportsCount: (allReports || []).filter((r) => r.status === "open").length,
+        totalProjectValue,
+        openReportsCount: (allReports || []).filter(
+          (r) => r.status === "open" || r.status === "investigating"
+        ).length,
         pendingVerifications: (allVerifications || []).filter(
           (v: any) => v.status === "submitted" || v.status === "in_review"
         ).length,
+        pendingModeration: (allModeration || []).filter((m) => m.status === "pending").length,
       },
       users,
       projects: projectsWithMod,
-      reports: allReports || [],
-      auditEvents: allAuditEvents || [],
-      verifications: allVerifications || [],
+      reports: enrichedReports,
+      auditEvents: enrichedAudit,
+      verifications: enrichedVerifications,
     });
   } catch (err: any) {
     console.error("[GET /api/admin error]:", err);
@@ -270,6 +310,70 @@ export async function POST(req: NextRequest) {
         entityTable: "moderation_reports",
         entityId: report_id,
         details: { status: validStatus, resolution: cleanResolution },
+      });
+
+      return jsonResponse({ success: true, status: validStatus });
+    }
+
+    // 4. REVIEW SKILL VERIFICATION SUBMISSION
+    if (action === "review_verification") {
+      const { submission_id, status: verStatus, notes } = body;
+
+      if (!isValidUUID(submission_id)) {
+        return errorResponse("Valid submission_id is required", 400);
+      }
+
+      const validStatus = validateEnum(
+        verStatus,
+        ["verified", "rejected"] as const
+      );
+      if (!validStatus) {
+        return errorResponse("Invalid verification status", 400);
+      }
+
+      const cleanNotes = sanitizeMultiline(notes, 1000);
+      const nowIso = new Date().toISOString();
+      const expiresAt =
+        validStatus === "verified"
+          ? new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString()
+          : null;
+
+      const { data: updated, error: updErr } = await supabase
+        .from("verification_submissions")
+        .update({
+          status: validStatus,
+          reviewed_by: caller.id,
+          reviewed_at: nowIso,
+          review_notes: cleanNotes || null,
+          expires_at: expiresAt,
+        })
+        .eq("id", submission_id)
+        .select("id, talent_id, assessment:verification_assessments(title)")
+        .single();
+
+      if (updErr || !updated) {
+        return errorResponse(updErr?.message || "Verification submission not found", 404);
+      }
+
+      await supabase.from("notification_inbox").insert({
+        user_id: updated.talent_id,
+        kind: validStatus === "verified" ? "verification_approved" : "verification_rejected",
+        title:
+          validStatus === "verified"
+            ? "Skill verification approved"
+            : "Skill verification update",
+        body:
+          validStatus === "verified"
+            ? `An administrator approved your ${(updated.assessment as any)?.title || "skill"} verification.`
+            : `Your ${(updated.assessment as any)?.title || "skill"} verification was not approved. ${cleanNotes || "You can retake the assessment anytime."}`,
+      });
+
+      await logAuditEvent({
+        actorId: caller.id,
+        action: `admin.verification.${validStatus}`,
+        entityTable: "verification_submissions",
+        entityId: submission_id,
+        details: { status: validStatus, notes: cleanNotes },
       });
 
       return jsonResponse({ success: true, status: validStatus });

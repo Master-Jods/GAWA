@@ -26,6 +26,9 @@ export async function GET(req: NextRequest) {
       { data: verifications },
       { data: portfolioItems },
       { data: talentSkills },
+      { data: talentProfile },
+      { data: catalogSkills },
+      { data: completedContracts },
     ] = await Promise.all([
       supabase
         .from("notification_inbox")
@@ -53,6 +56,7 @@ export async function GET(req: NextRequest) {
           status,
           score,
           submitted_at,
+          expires_at,
           assessment:verification_assessments(
             id,
             title,
@@ -71,6 +75,29 @@ export async function GET(req: NextRequest) {
         .from("talent_skills")
         .select("proficiency, skill:catalog_skills(id, name)")
         .eq("talent_id", caller.id),
+      supabase
+        .from("talent_profiles")
+        .select("headline, school, course, remote_work, hybrid_work, onsite_work")
+        .eq("user_id", caller.id)
+        .maybeSingle(),
+      supabase
+        .from("catalog_skills")
+        .select("id, name, category")
+        .order("name", { ascending: true })
+        .limit(60),
+      supabase
+        .from("project_contracts")
+        .select(`
+          id,
+          agreed_amount,
+          status,
+          completed_at,
+          created_at,
+          project:project_listings(title, duration_label, business:business_profiles(name))
+        `)
+        .eq("talent_id", caller.id)
+        .eq("status", "completed")
+        .order("completed_at", { ascending: false }),
     ]);
 
     // 2. Strict Privilege Boundary: Admin platform data ONLY returned to admins
@@ -241,8 +268,11 @@ export async function GET(req: NextRequest) {
       verifications: (verifications || []).map((v: any) => ({
         id: v.id,
         skill_name: v.assessment?.skill?.name || v.assessment?.title || "Skill",
+        assessment_title: v.assessment?.title || "Skill Assessment",
         status: v.status,
         score: Number(v.score) || 0,
+        submitted_at: v.submitted_at,
+        expires_at: v.expires_at,
       })),
       portfolio: portfolioItems || [],
       skills: (talentSkills || [])
@@ -252,6 +282,16 @@ export async function GET(req: NextRequest) {
           proficiency: ts.proficiency,
         }))
         .filter((s) => s.name),
+      talentProfile: talentProfile || null,
+      catalogSkills: catalogSkills || [],
+      completedContracts: (completedContracts || []).map((c: any) => ({
+        id: c.id,
+        title: c.project?.title || "Completed Project",
+        company: c.project?.business?.name || "Client Business",
+        duration: c.project?.duration_label || "Project",
+        agreed_amount: Number(c.agreed_amount) || 0,
+        completed_at: c.completed_at || c.created_at,
+      })),
       admin: adminPayload,
     });
   } catch (err: any) {
@@ -377,6 +417,62 @@ export async function POST(req: NextRequest) {
         entityTable: "portfolio_items",
         entityId: item_id,
       });
+
+      return jsonResponse({ success: true });
+    }
+
+    // 2d. ADD OR REMOVE SELF-DECLARED TALENT SKILL
+    if (action === "add_talent_skill") {
+      const skillName = sanitizeString(body.skill_name, 60);
+      const proficiency =
+        body.proficiency === "beginner" ||
+        body.proficiency === "intermediate" ||
+        body.proficiency === "advanced"
+          ? body.proficiency
+          : "intermediate";
+
+      if (!skillName) {
+        return errorResponse("Skill name is required", 400);
+      }
+
+      const { data: skillData } = await supabase
+        .from("catalog_skills")
+        .select("id, name")
+        .ilike("name", skillName)
+        .maybeSingle();
+
+      if (!skillData) {
+        return errorResponse("Selected skill was not found in catalog", 404);
+      }
+
+      const { error: upErr } = await supabase.from("talent_skills").upsert({
+        talent_id: caller.id,
+        skill_id: skillData.id,
+        proficiency,
+      });
+
+      if (upErr) {
+        return errorResponse(upErr.message, 500);
+      }
+
+      return jsonResponse({ success: true, skill: skillData, proficiency });
+    }
+
+    if (action === "remove_talent_skill") {
+      const { skill_id } = body;
+      if (!isValidUUID(skill_id)) {
+        return errorResponse("Valid skill_id is required", 400);
+      }
+
+      const { error: delErr } = await supabase
+        .from("talent_skills")
+        .delete()
+        .eq("talent_id", caller.id)
+        .eq("skill_id", skill_id);
+
+      if (delErr) {
+        return errorResponse(delErr.message, 500);
+      }
 
       return jsonResponse({ success: true });
     }
