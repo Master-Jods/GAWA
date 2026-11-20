@@ -17,32 +17,18 @@ export interface AccountProfile {
   profile_visible: boolean;
 }
 
-interface PendingMfaChallenge {
-  challengeId: string;
-  userId: string;
-  channel: string;
-}
-
 interface AuthContextType {
   user: User | null;
   session: Session | null;
   profile: AccountProfile | null;
   role: UserRole;
   loading: boolean;
-  pendingMfaChallenge: PendingMfaChallenge | null;
+  mfaVerified: boolean;
   signIn: (
     email: string,
     password: string,
     expectedRole?: "talent" | "business"
-  ) => Promise<{
-    error?: string;
-    role?: UserRole;
-    mfaRequired?: boolean;
-    challengeId?: string;
-    userId?: string;
-    channel?: string;
-    method?: string;
-  }>;
+  ) => Promise<{ error?: string; role?: UserRole }>;
   signUp: (params: {
     email: string;
     password: string;
@@ -53,12 +39,6 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   signInWithGoogle: () => Promise<{ error?: string }>;
-  verifyOtp: (
-    challengeId: string,
-    code: string,
-    userId: string
-  ) => Promise<{ error?: string; role?: string }>;
-  resendOtp: (challengeId: string) => Promise<{ error?: string; challengeId?: string }>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -69,12 +49,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<AccountProfile | null>(null);
   const [role, setRole] = useState<UserRole>("talent");
   const [loading, setLoading] = useState(true);
-  const [pendingMfaChallenge, setPendingMfaChallenge] =
-    useState<PendingMfaChallenge | null>(null);
+  const [mfaVerified, setMfaVerified] = useState(false);
 
   const fetchUserData = async (currentUser: User): Promise<UserRole> => {
-    let resolvedRole: UserRole =
-      currentUser.user_metadata?.role === "business" ? "business" : "talent";
+    let resolvedRole: UserRole = "talent";
     try {
       // 1. Fetch role from account_roles
       const { data: roleData, error: roleError } = await supabase
@@ -109,6 +87,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.error("Error fetching user profile/roles:", err);
     }
+    const { data: assurance, error: assuranceError } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+    setMfaVerified(!assuranceError && assurance?.currentLevel === "aal2");
     return resolvedRole;
   };
 
@@ -127,14 +107,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // Listen to auth state changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
       setUser(newSession?.user ?? null);
       if (newSession?.user) {
-        await fetchUserData(newSession.user);
+        setMfaVerified(false);
+        // Avoid holding the Auth event lock while issuing more Auth requests.
+        setTimeout(() => { fetchUserData(newSession.user).finally(() => setLoading(false)); }, 0);
+        return;
       } else {
         setProfile(null);
         setRole("talent");
+        setMfaVerified(false);
       }
       setLoading(false);
     });
@@ -149,53 +133,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     password: string,
     expectedRole?: "talent" | "business"
   ) => {
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password, expected_role: expectedRole }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        return { error: data.error || "Login failed" };
-      }
-
-      // MFA required
-      if (data.mfa_required) {
-        setPendingMfaChallenge({
-          challengeId: data.challenge_id,
-          userId: data.user_id,
-          channel: data.channel || "email",
-        });
-        return {
-          mfaRequired: true,
-          challengeId: data.challenge_id,
-          userId: data.user_id,
-          channel: data.channel || "email",
-          method: data.method,
-        };
-      }
-
-      // Normal session response
-      if (data.access_token && data.refresh_token) {
-        const { error: sessionError } = await supabase.auth.setSession({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token,
-        });
-        if (sessionError) {
-          return { error: sessionError.message };
-        }
-        // fetchUserData will be triggered by onAuthStateChange
-        const actualRole = data.role as UserRole || "talent";
-        return { role: actualRole };
-      }
-
-      return { error: "Unexpected response from server" };
-    } catch (err: any) {
-      return { error: err?.message || "Network error" };
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) return { error: error.message };
+    if (!data.user) return { error: "Unable to establish your account identity." };
+    const { data: status, error: statusError } = await supabase.from("account_statuses")
+      .select("status").eq("user_id", data.user.id).single();
+    if (statusError || status?.status !== "active") {
+      await supabase.auth.signOut();
+      return { error: "Your account is not active or could not be checked." };
     }
+    const actualRole = await fetchUserData(data.user);
+    if (expectedRole && actualRole !== "admin" && expectedRole !== actualRole) {
+      await supabase.auth.signOut();
+      return { error: `Please use the ${actualRole} login tab for this account.` };
+    }
+    // An AAL1 session can only proceed through the mandatory Authenticator gate.
+    return { role: actualRole };
   };
 
   const signUp = async ({
@@ -215,6 +168,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       email,
       password,
       options: {
+        emailRedirectTo: typeof window !== "undefined"
+          ? new URL("/", window.location.origin).toString()
+          : undefined,
         data: {
           display_name: displayName,
           role: chosenRole,
@@ -228,8 +184,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     if (data.session && data.user) {
-      const actualRole = await fetchUserData(data.user);
-      return { role: actualRole };
+      await supabase.auth.signOut();
+      return { error: "Signup email confirmation must be enabled in Supabase before registration can continue." };
     }
 
     // Email confirmation required
@@ -247,7 +203,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setSession(null);
     setProfile(null);
     setRole("talent");
-    setPendingMfaChallenge(null);
+    setMfaVerified(false);
   };
 
   const refreshProfile = async () => {
@@ -274,68 +230,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const verifyOtp = async (
-    challengeId: string,
-    code: string,
-    userId: string
-  ): Promise<{ error?: string; role?: string }> => {
-    try {
-      const res = await fetch("/api/auth/otp/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-        body: JSON.stringify({ challenge_id: challengeId, code, user_id: userId }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        return { error: data.error || "OTP verification failed" };
-      }
-
-      // Set session from OTP verify response
-      if (data.access_token && data.refresh_token) {
-        await supabase.auth.setSession({
-          access_token: data.access_token,
-          refresh_token: data.refresh_token,
-        });
-      }
-
-      setPendingMfaChallenge(null);
-      return { role: data.role };
-    } catch (err: any) {
-      return { error: err?.message || "Network error" };
-    }
-  };
-
-  const resendOtp = async (
-    challengeId: string
-  ): Promise<{ error?: string; challengeId?: string }> => {
-    try {
-      const res = await fetch("/api/auth/otp/resend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-        body: JSON.stringify({ challenge_id: challengeId }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        return { error: data.error || "Failed to resend OTP" };
-      }
-
-      if (data.challenge_id) {
-        setPendingMfaChallenge((prev) =>
-          prev ? { ...prev, challengeId: data.challenge_id } : null
-        );
-        return { challengeId: data.challenge_id };
-      }
-
-      return {};
-    } catch (err: any) {
-      return { error: err?.message || "Network error" };
-    }
-  };
-
   return (
     <AuthContext.Provider
       value={{
@@ -344,14 +238,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         profile,
         role,
         loading,
-        pendingMfaChallenge,
+        mfaVerified,
         signIn,
         signUp,
         signOut,
         refreshProfile,
         signInWithGoogle,
-        verifyOtp,
-        resendOtp,
       }}
     >
       {children}

@@ -7,18 +7,22 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "format": "oxfmt"
+    "format": "oxfmt",
+    "test:auth-email": "node --test tests/auth-email.test.mjs",
+    "test:auth": "node --test tests/auth-email.test.mjs tests/native-auth.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.119.0",
     "lucide-react": "^1.73.0",
     "next": "^16.4.6",
+    "nodemailer": "10.6.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.5",
     "@types/node": "^22.0.0",
+    "@types/nodemailer": "8.0.2",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

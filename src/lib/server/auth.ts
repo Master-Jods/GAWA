@@ -52,6 +52,12 @@ export async function getAuthenticatedUser(
       return null;
     }
 
+    // getUser validated the token above; require Supabase's signed MFA assurance claim.
+    let claims: { aal?: string };
+    try { claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")); }
+    catch { return null; }
+    if (claims.aal !== "aal2" || !user.email_confirmed_at) return null;
+
     // 1. Check account active status (Must be 'active')
     const { data: statusData } = await supabase
       .from("account_statuses")

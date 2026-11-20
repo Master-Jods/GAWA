@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  allowedDevOrigins: ["127.0.0.1"],
   poweredByHeader: false, // Security: disables X-Powered-By: Next.js
   async headers() {
     return [

@@ -21,6 +21,7 @@ import {
   Eye,
   FileCheck2,
   FileText,
+  Fingerprint,
   Filter,
   FolderKanban,
   GraduationCap,
@@ -89,6 +90,13 @@ import {
   getInitials,
 } from "@/lib/api/projects";
 import { supabase } from "@/lib/supabase/client";
+import { AuthenticatorGate } from "@/lib/auth/AuthenticatorGate";
+import { SignupEmailVerification } from "@/lib/auth/SignupEmailVerification";
+import { SkillPassport } from "@/components/gawa/SkillPassport";
+import { FitLens } from "@/components/gawa/FitLens";
+import { Fieldnotes } from "@/components/gawa/Fieldnotes";
+import { DeliveryTrail } from "@/components/gawa/DeliveryTrail";
+import { skillOverlap } from "@/components/gawa/evidence";
 
 type Role = "talent" | "business" | "admin";
 type View = "landing" | "login" | "register" | "onboarding" | "app";
@@ -339,55 +347,38 @@ function Landing({
           <div className="hero-glow"></div>
           <div className="hero-copy">
             <div className="eyebrow">
-              <ShieldCheck size={14} /> Built for Filipino talent, powered by skills
+              <Fingerprint size={14} /> FILIPINO TALENT. REAL POSSIBILITIES.
             </div>
-            <h1>
-              Your skills deserve
-              <br />
-              <span>real opportunities.</span>
+            <h1 className="gawa-hero-title">
+              Galing mo.<br/>Gawa mo.<br/><span>Patunay mo.</span>
             </h1>
             <p>
-              Connect with real-world projects, showcase what you can do, and turn your skills into
-              meaningful experience.
+              Your skills are a beginning. Turn them into real projects, meaningful collaborations,
+              and a story of work you can proudly call your own.
             </p>
             <div className="hero-actions">
               <button
                 className="btn btn-primary btn-lg"
                 onClick={() => onNavigate("register", "talent")}
               >
-                Explore projects <ArrowRight size={18} />
+                Find my next project
               </button>
               <button
                 className="btn btn-white btn-lg"
                 onClick={() => onNavigate("register", "business")}
               >
-                Find talent
+                I’m building a team
               </button>
             </div>
-            <div className="trust-row">
-              <div className="avatar-stack">
-                <Avatar initials="MR" size="sm" />
-                <Avatar initials="PS" color="#805AD5" size="sm" />
-                <Avatar initials="AC" color="#E0527D" size="sm" />
-              </div>
-              <div>
-                <strong>Skill-First Marketplace</strong>
-                <span>Connect with verified opportunities</span>
-              </div>
-            </div>
+            <div className="gawa-hero-promise"><span><Check size={15}/> Skills with a purpose</span><span><Check size={15}/> Work with a story</span></div>
           </div>
-          <HeroVisual />
+          <Fieldnotes onStart={() => onNavigate("register", "talent")} />
         </section>
 
-        <section className="logo-strip">
-          <span>Trusted by growing Filipino businesses</span>
-          <div>
-            <b>HABI</b>
-            <b>Alaga</b>
-            <b>Kape Norte</b>
-            <b>lakbay lokal</b>
-            <b>BayanBox</b>
-          </div>
+        <section className="gawa-manifesto" aria-label="The GAWA promise">
+          <div><span className="gawa-manifesto-mark" aria-hidden="true"><i/><i/><i/></span><b>Potential deserves<br/>a place to begin.</b></div>
+          <p>For the first brief. The first collaboration.<br/>The first piece of work that says, <em>“Ako ang gumawa.”</em></p>
+          <span className="gawa-manifesto-signature">Made of skill.<br/><strong>Built through action.</strong></span>
         </section>
 
         <section
@@ -819,251 +810,6 @@ function ForgotPasswordModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function OtpVerifyScreen({
-  challengeId,
-  userId,
-  channel,
-  onSuccess,
-  onCancel,
-}: {
-  challengeId: string;
-  userId: string;
-  channel: string;
-  onSuccess: (role: Role) => void;
-  onCancel: () => void;
-}) {
-  const { verifyOtp, resendOtp } = useAuth();
-  const [code, setCode] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [resendCooldown, setResendCooldown] = useState(60);
-  const [resending, setResending] = useState(false);
-  const [resendMessage, setResendMessage] = useState("");
-  const [currentChallengeId, setCurrentChallengeId] = useState(challengeId);
-
-  useEffect(() => {
-    if (challengeId) {
-      setCurrentChallengeId(challengeId);
-    }
-  }, [challengeId]);
-
-  useEffect(() => {
-    if (resendCooldown <= 0) return;
-    const t = setTimeout(() => setResendCooldown((c) => c - 1), 1000);
-    return () => clearTimeout(t);
-  }, [resendCooldown]);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSubmitting(true);
-    const result = await verifyOtp(currentChallengeId, code, userId);
-    setSubmitting(false);
-    if (result.error) {
-      setError(result.error);
-      return;
-    }
-    onSuccess((result.role as Role) || "talent");
-  };
-
-  const handleResend = async () => {
-    if (resendCooldown > 0 || resending) return;
-    setResending(true);
-    setResendMessage("");
-    setError("");
-    const result = await resendOtp(currentChallengeId);
-    setResending(false);
-    if (result.error) {
-      setError(result.error);
-    } else {
-      if (result.challengeId) {
-        setCurrentChallengeId(result.challengeId);
-      }
-      setResendMessage("A new code has been sent.");
-      setResendCooldown(60);
-    }
-  };
-
-  return (
-    <div className="auth-page">
-      <div className="auth-aside">
-        <Logo light />
-        <div className="auth-quote">
-          <div className="eyebrow dark"><ShieldCheck size={14} /> SECURE VERIFICATION</div>
-          <h2>One more step.</h2>
-          <p>Enter the code sent to your {channel === "sms" ? "phone" : "email"} to verify your identity.</p>
-        </div>
-        <small>Galing. Aksyon. Wasto. Asenso.</small>
-      </div>
-      <div className="auth-main">
-        <button className="back-link" onClick={onCancel}><ArrowLeft size={17} /> Back to login</button>
-        <div className="auth-card landing-tab-panel">
-          <span className="auth-kicker">IDENTITY VERIFICATION</span>
-          <h1>Check your {channel === "sms" ? "phone" : "email"}</h1>
-          <p>We sent a 6-digit code to your registered {channel === "sms" ? "phone number" : "email address"}. It expires in 5 minutes.</p>
-          {error && (
-            <div style={{ padding: "10px 14px", background: "#fef2f2", color: "#b91c1c", borderRadius: 8, fontSize: 13, marginBottom: 14, border: "1px solid #fecaca" }}>
-              {error}
-            </div>
-          )}
-          {resendMessage && (
-            <div style={{ padding: "10px 14px", background: "#f0fdf4", color: "#15803d", borderRadius: 8, fontSize: 13, marginBottom: 14, border: "1px solid #bbf7d0" }}>
-              {resendMessage}
-            </div>
-          )}
-          <form onSubmit={handleSubmit}>
-            <label>
-              Verification code
-              <input
-                required
-                type="text"
-                inputMode="numeric"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                placeholder="123456"
-                value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                autoFocus
-                style={{ fontSize: 24, letterSpacing: "0.3em", textAlign: "center" }}
-              />
-            </label>
-            <button type="submit" disabled={submitting || code.length !== 6} className="btn btn-primary full btn-lg">
-              {submitting ? "Verifying…" : "Verify"} <ShieldCheck size={17} />
-            </button>
-          </form>
-          <div style={{ textAlign: "center", marginTop: 16 }}>
-            <button
-              type="button"
-              onClick={handleResend}
-              disabled={resendCooldown > 0 || resending}
-              className="btn btn-white full"
-            >
-              {resending ? "Sending…" : resendCooldown > 0 ? `Resend code (${resendCooldown}s)` : "Resend code"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TotpChallengeScreen({
-  userId,
-  onSuccess,
-  onCancel,
-}: {
-  userId: string;
-  onSuccess: (role: Role) => void;
-  onCancel: () => void;
-}) {
-  const [code, setCode] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [useRecovery, setUseRecovery] = useState(false);
-  const [recoveryCode, setRecoveryCode] = useState("");
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setSubmitting(true);
-    try {
-      const endpoint = useRecovery ? "/api/auth/2fa/recovery" : "/api/auth/2fa/challenge";
-      const body = useRecovery
-        ? { user_id: userId, recovery_code: recoveryCode }
-        : { user_id: userId, code };
-      const res = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Verification failed.");
-        return;
-      }
-      if (data.access_token && data.refresh_token) {
-        const { supabase: sb } = await import("@/lib/supabase/client");
-        await sb.auth.setSession({ access_token: data.access_token, refresh_token: data.refresh_token });
-      }
-      onSuccess((data.role as Role) || "talent");
-    } catch {
-      setError("Network error. Please try again.");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="auth-page">
-      <div className="auth-aside">
-        <Logo light />
-        <div className="auth-quote">
-          <div className="eyebrow dark"><LockKeyhole size={14} /> TWO-FACTOR AUTH</div>
-          <h2>Verify with your authenticator.</h2>
-          <p>Open your authenticator app and enter the 6-digit code.</p>
-        </div>
-        <small>Galing. Aksyon. Wasto. Asenso.</small>
-      </div>
-      <div className="auth-main">
-        <button className="back-link" onClick={onCancel}><ArrowLeft size={17} /> Back to login</button>
-        <div className="auth-card landing-tab-panel">
-          <span className="auth-kicker">TWO-FACTOR AUTHENTICATION</span>
-          <h1>{useRecovery ? "Use a recovery code" : "Authenticator code"}</h1>
-          <p>{useRecovery ? "Enter one of your saved recovery codes." : "Enter the 6-digit code from your authenticator app."}</p>
-          {error && (
-            <div style={{ padding: "10px 14px", background: "#fef2f2", color: "#b91c1c", borderRadius: 8, fontSize: 13, marginBottom: 14, border: "1px solid #fecaca" }}>
-              {error}
-            </div>
-          )}
-          <form onSubmit={handleSubmit}>
-            {useRecovery ? (
-              <label>
-                Recovery code
-                <input
-                  required
-                  type="text"
-                  placeholder="xxxxxx-xxxxxx"
-                  value={recoveryCode}
-                  onChange={(e) => setRecoveryCode(e.target.value.trim())}
-                  autoFocus
-                />
-              </label>
-            ) : (
-              <label>
-                6-digit code
-                <input
-                  required
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
-                  placeholder="000000"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  autoFocus
-                  style={{ fontSize: 24, letterSpacing: "0.3em", textAlign: "center" }}
-                />
-              </label>
-            )}
-            <button
-              type="submit"
-              disabled={submitting || (!useRecovery && code.length !== 6) || (useRecovery && recoveryCode.length < 6)}
-              className="btn btn-primary full btn-lg"
-            >
-              {submitting ? "Verifying…" : "Verify"} <ShieldCheck size={17} />
-            </button>
-          </form>
-          <div style={{ textAlign: "center", marginTop: 16 }}>
-            <button type="button" className="btn btn-white full" onClick={() => { setUseRecovery(!useRecovery); setError(""); setCode(""); setRecoveryCode(""); }}>
-              {useRecovery ? "Use authenticator app instead" : "Use a recovery code"}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function Auth({
   mode,
   initialRole,
@@ -1075,14 +821,12 @@ function Auth({
   onBack: () => void;
   onComplete: (role: Role, onboarding?: boolean) => void;
 }) {
-  const { signIn, signUp, signInWithGoogle, pendingMfaChallenge } = useAuth();
+  const { signIn, signUp, signInWithGoogle } = useAuth();
   const [currentMode, setCurrentMode] = useState<"login" | "register">(mode);
   const [role, setRole] = useState<Role>(initialRole || "talent");
   const [step, setStep] = useState(mode === "register" ? 0 : 1);
   const [showPassword, setShowPassword] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
-  const [pendingOtp, setPendingOtp] = useState<{ challengeId: string; userId: string; channel: string } | null>(null);
-  const [pendingTotp, setPendingTotp] = useState<{ userId: string } | null>(null);
   const [googleLoading, setGoogleLoading] = useState(false);
 
   const [email, setEmail] = useState("");
@@ -1091,23 +835,13 @@ function Auth({
   const [businessName, setBusinessName] = useState("");
   const [authError, setAuthError] = useState("");
   const [infoMessage, setInfoMessage] = useState("");
+  const [pendingSignupEmail, setPendingSignupEmail] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     setCurrentMode(mode);
     setStep(mode === "register" ? 0 : 1);
   }, [mode]);
-
-  // Reflect any pending challenge from AuthContext (e.g. from Google SSO callback)
-  useEffect(() => {
-    if (pendingMfaChallenge && !pendingOtp) {
-      setPendingOtp({
-        challengeId: pendingMfaChallenge.challengeId,
-        userId: pendingMfaChallenge.userId,
-        channel: pendingMfaChallenge.channel,
-      });
-    }
-  }, [pendingMfaChallenge]);
 
   const handleGoogleSignIn = async () => {
     setAuthError("");
@@ -1135,20 +869,6 @@ function Auth({
           setAuthError(result.error);
           return;
         }
-        // MFA / OTP step required
-        if ((result as any).mfaRequired) {
-          const res = result as any;
-          if (res.method === "totp") {
-            setPendingTotp({ userId: res.userId });
-          } else {
-            setPendingOtp({
-              challengeId: res.challengeId,
-              userId: res.userId,
-              channel: res.channel || "email",
-            });
-          }
-          return;
-        }
         onComplete((result as any).role || expected, false);
       } else {
         if (!displayName.trim()) {
@@ -1169,9 +889,7 @@ function Auth({
           return;
         }
         if (requiresEmailConfirmation) {
-          setInfoMessage(
-            "Account created! Please check your email to confirm your registration before logging in."
-          );
+          setPendingSignupEmail(email.trim());
           return;
         }
         onComplete(actualRole || role, true);
@@ -1182,34 +900,9 @@ function Auth({
     }
   };
 
-  // Route to OTP verification screen
-  if (pendingOtp) {
-    return (
-      <OtpVerifyScreen
-        challengeId={pendingOtp.challengeId}
-        userId={pendingOtp.userId}
-        channel={pendingOtp.channel}
-        onSuccess={(resolvedRole) => {
-          setPendingOtp(null);
-          onComplete(resolvedRole, false);
-        }}
-        onCancel={() => setPendingOtp(null)}
-      />
-    );
-  }
-
-  // Route to TOTP verification screen
-  if (pendingTotp) {
-    return (
-      <TotpChallengeScreen
-        userId={pendingTotp.userId}
-        onSuccess={(resolvedRole) => {
-          setPendingTotp(null);
-          onComplete(resolvedRole, false);
-        }}
-        onCancel={() => setPendingTotp(null)}
-      />
-    );
+  if (pendingSignupEmail) {
+    return <SignupEmailVerification email={pendingSignupEmail}
+      onBack={() => { setPendingSignupEmail(null); setCurrentMode("login"); }} />;
   }
 
   return (
@@ -1975,6 +1668,7 @@ function Shell({
           </button>
         </div>
         <div className="workspace-label">{role === "admin" ? "ADMIN CONSOLE" : "WORKSPACE"}</div>
+        <div className="sidebar-tatak"><Fingerprint size={19}/><div><b>Make work. Leave proof.</b><span>Your GAWA fieldnotes</span></div></div>
         <nav>
           {nav.map(([label, Icon]) => (
             <button
@@ -2142,6 +1836,7 @@ function TalentApp({
   const [query, setQuery] = useState("");
   const [chip, setChip] = useState<"all" | "best" | "new" | "remote" | "saved">("all");
   const [categoryFilter, setCategoryFilter] = useState<string>("all");
+  const [focusedSkills, setFocusedSkills] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<"newest" | "budget" | "match">("newest");
 
   // Clear project detail view whenever the user navigates via sidebar
@@ -2213,6 +1908,7 @@ function TalentApp({
         .toLowerCase()
         .includes(query.toLowerCase());
       if (!matchesQuery) return false;
+      if (focusedSkills.length && !skillOverlap(p.skills, focusedSkills).matched.length) return false;
       if (categoryFilter !== "all" && p.category !== categoryFilter) return false;
       if (chip === "saved") return saved.some((x) => String(x) === String(p.id));
       if (chip === "best") return p.match >= 50;
@@ -2233,7 +1929,7 @@ function TalentApp({
       return [...list].sort((a, b) => b.match - a.match);
     }
     return list;
-  }, [marketProjects, query, chip, categoryFilter, saved, sortBy]);
+  }, [marketProjects, query, chip, categoryFilter, saved, sortBy, focusedSkills]);
 
   if (selected)
     return (
@@ -2342,6 +2038,9 @@ function TalentApp({
           title="Discover work that fits you"
           text="Explore opportunities matched to your skills, goals, and availability."
         />
+        <FitLens skills={(overview?.skills || []).map((skill: { name: string }) => skill.name)}
+          selected={focusedSkills} onChange={setFocusedSkills} count={filteredProjects.length}
+          onAddSkills={() => setActive("My Portfolio")} />
         <div className="search-filter">
           <div>
             <Search />
@@ -2370,6 +2069,7 @@ function TalentApp({
               setChip("all");
               setCategoryFilter("all");
               setQuery("");
+              setFocusedSkills([]);
             }}
           >
             <Filter size={18} /> Reset <span>{chip === "all" && categoryFilter === "all" && !query ? 0 : 1}</span>
@@ -2414,13 +2114,14 @@ function TalentApp({
             <div className="project-grid">
               {filteredProjects.length > 0 ? (
                 filteredProjects.map((p) => (
-                  <ProjectCard
-                    key={p.id}
+                  <div key={p.id} className="fit-project-wrap"><ProjectCard
                     project={p}
                     onClick={() => setSelected(p)}
                     saved={saved.some((id) => String(id) === String(p.id))}
                     onSave={() => toggleSave(p.id)}
                   />
+                  {focusedSkills.length > 0 && <div className="fit-proof"><b>In your focus:</b> {skillOverlap(p.skills, focusedSkills).matched.join(", ") || "None"}.<br/><span>{skillOverlap(p.skills, focusedSkills).missing.length ? `Other requirements: ${skillOverlap(p.skills, focusedSkills).missing.join(", ")}.` : "Every listed skill requirement is in your focus."}</span></div>}
+                  </div>
                 ))
               ) : (
                 <div
@@ -3280,6 +2981,7 @@ function ActiveProject({
   const [contracts, setContracts] = useState<any[]>(externalContracts || []);
   const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
   const [taskInput, setTaskInput] = useState("");
+  const [focusedMilestone, setFocusedMilestone] = useState<string | null>(null);
   const [deliverableModal, setDeliverableModal] = useState(false);
   const [delivTitle, setDelivTitle] = useState("");
   const [delivNotes, setDelivNotes] = useState("");
@@ -3351,6 +3053,8 @@ function ActiveProject({
     contracts.find((c) => c.id === selectedContractId) || contracts[0];
   const proj = activeContract.project || {};
   const milestones = activeContract.milestones || [];
+  const activeMilestone = milestones.find((m: { id: string }) => m.id === focusedMilestone);
+  const focusedTasks = activeMilestone ? activeMilestone.tasks || [] : null;
   const allTasks = milestones.flatMap((m: any) => m.tasks || []);
   const deliverables = activeContract.deliverables || [];
   const doneTasksCount = allTasks.filter((t: any) => t.is_done).length;
@@ -3359,7 +3063,7 @@ function ActiveProject({
       ? Math.round((doneTasksCount / allTasks.length) * 100)
       : activeContract.status === "completed"
       ? 100
-      : 25;
+      : 0;
 
   const businessName = proj.business?.name || (role === "business" ? profile?.display_name : "Business Partner") || "Business";
   const talentName = activeContract.talent?.display_name || (role === "talent" ? profile?.display_name : "Assigned Talent") || "Talent";
@@ -3437,7 +3141,7 @@ function ActiveProject({
               key={c.id}
               type="button"
               className={c.id === activeContract.id ? "active" : ""}
-              onClick={() => setSelectedContractId(c.id)}
+              onClick={() => { setSelectedContractId(c.id); setFocusedMilestone(null); }}
             >
               {c.project?.title || "Contract"} ({c.status === "completed" ? "Completed" : "Active"})
             </button>
@@ -3445,12 +3149,14 @@ function ActiveProject({
         </div>
       )}
 
+      <DeliveryTrail milestones={milestones} selected={activeMilestone?.id || null}
+        onSelect={setFocusedMilestone} deliverables={deliverables} />
       <div className="workspace-grid">
         <div style={{ display: "flex", flexDirection: "column", gap: 16, minWidth: 0 }}>
           <section className="panel" style={{ padding: 24 }}>
             <div className="panel-title" style={{ marginBottom: 14 }}>
               <div>
-                <b>Delivery Milestones & Task Checklist</b>
+                <b>{activeMilestone ? activeMilestone.title : "Delivery Milestones & Task Checklist"}</b>
                 <span>
                   {doneTasksCount} of {allTasks.length} tasks completed
                 </span>
@@ -3474,7 +3180,7 @@ function ActiveProject({
             </div>
 
             <div>
-              {allTasks.length === 0 ? (
+              {(focusedTasks || allTasks).length === 0 ? (
                 <div
                   style={{
                     padding: "24px 16px",
@@ -3490,7 +3196,7 @@ function ActiveProject({
                   No checklist tasks yet. Add your first delivery task below.
                 </div>
               ) : (
-                allTasks.map((t: any, idx: number) => (
+                (focusedTasks || allTasks).map((t: any, idx: number) => (
                   <div
                     className={`milestone ${t.is_done ? "done" : ""}`}
                     key={t.id}
@@ -3534,6 +3240,7 @@ function ActiveProject({
                 if (!taskInput.trim()) return;
                 const ok = await callContractAction({
                   action: "add_task",
+                  milestone_id: activeMilestone?.id,
                   title: taskInput.trim(),
                 });
                 if (ok) {
@@ -4291,7 +3998,7 @@ function Portfolio({
   const initials = getInitials(displayName);
   const portfolioItems = overview?.portfolio || [];
   const allVerifications = overview?.verifications || [];
-  const verifiedSkills = allVerifications.filter((v: any) => v.status === "verified");
+  const verifiedSkills = allVerifications.filter((v: any) => v.status === "verified" && (!v.expires_at || Date.parse(v.expires_at) > Date.now()));
   const talentSkills = overview?.skills || [];
   const catalogSkills = overview?.catalogSkills || [];
   const completedContracts = overview?.completedContracts || [];
@@ -4524,36 +4231,9 @@ function Portfolio({
         </div>
       </section>
 
-      <div className="passport-stats-strip">
-        <div className="panel passport-mini-stat">
-          <span className="stat-icon green"><Award size={20} /></span>
-          <div>
-            <strong>{verifiedSkills.length}</strong>
-            <span>Verified badges</span>
-          </div>
-        </div>
-        <div className="panel passport-mini-stat">
-          <span className="stat-icon blue"><Zap size={20} /></span>
-          <div>
-            <strong>{talentSkills.length}</strong>
-            <span>Listed skills</span>
-          </div>
-        </div>
-        <div className="panel passport-mini-stat">
-          <span className="stat-icon purple"><CheckCircle2 size={20} /></span>
-          <div>
-            <strong>{completedContracts.length}</strong>
-            <span>Completed projects</span>
-          </div>
-        </div>
-        <div className="panel passport-mini-stat">
-          <span className="stat-icon amber"><FolderKanban size={20} /></span>
-          <div>
-            <strong>{portfolioItems.length}</strong>
-            <span>Work samples</span>
-          </div>
-        </div>
-      </div>
+      <SkillPassport name={displayName} skills={talentSkills} verifications={allVerifications}
+        work={portfolioItems} completed={completedContracts} reviews={reviews}
+        onVerify={onVerifySkill} onAddWork={() => setModalOpen(true)} />
 
       <div className="portfolio-grid">
         <section className="panel rich-copy">
@@ -6921,293 +6601,6 @@ function Reviews({
   );
 }
 
-function TwoFactorSetupModal({
-  onClose,
-  onSuccess,
-}: {
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
-  const [step, setStep] = useState<"init" | "verify" | "recovery">("init");
-  const [loading, setLoading] = useState(true);
-  const [otpauthUrl, setOtpauthUrl] = useState("");
-  const [secret, setSecret] = useState("");
-  const [code, setCode] = useState("");
-  const [error, setError] = useState("");
-  const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
-  const [copied, setCopied] = useState(false);
-
-  useEffect(() => {
-    // Start enrollment
-    fetch("/api/auth/2fa/setup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        setLoading(false);
-        if (data.otpauth_url && data.secret) {
-          setOtpauthUrl(data.otpauth_url);
-          setSecret(data.secret);
-          setStep("verify");
-        } else {
-          setError(data.error || "Failed to initialize 2FA setup");
-        }
-      })
-      .catch((err) => {
-        setLoading(false);
-        setError(err.message || "Network error");
-      });
-  }, []);
-
-  const handleVerify = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/2fa/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-        body: JSON.stringify({ code }),
-      });
-      const data = await res.json();
-      setLoading(false);
-      if (!res.ok) {
-        setError(data.error || "Verification failed");
-        return;
-      }
-      setRecoveryCodes(data.recovery_codes || []);
-      setStep("recovery");
-      onSuccess();
-    } catch {
-      setLoading(false);
-      setError("Network error. Please try again.");
-    }
-  };
-
-  const copyCodes = () => {
-    navigator.clipboard.writeText(recoveryCodes.join("\n"));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && step !== "verify") onClose();
-      }}
-    >
-      <div className="panel" style={{ maxWidth: 460, width: "100%", padding: 32 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>
-            {step === "recovery" ? "Save your recovery codes" : "Set up Google Authenticator"}
-          </h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
-            <X size={20} />
-          </button>
-        </div>
-
-        {error && (
-          <div style={{ padding: "10px 14px", background: "#fef2f2", color: "#b91c1c", borderRadius: 8, fontSize: 13, marginBottom: 14, border: "1px solid #fecaca" }}>
-            {error}
-          </div>
-        )}
-
-        {loading && step === "init" && (
-          <div style={{ textAlign: "center", padding: 24, color: "#627d98" }}>
-            Generating your unique 2FA key…
-          </div>
-        )}
-
-        {step === "verify" && (
-          <div>
-            <p style={{ color: "#486581", fontSize: 13, marginBottom: 16 }}>
-              1. Scan this QR code in Google Authenticator or Authy:
-            </p>
-            <div style={{ textAlign: "center", marginBottom: 16 }}>
-              {otpauthUrl && (
-                <img
-                  src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(otpauthUrl)}`}
-                  alt="2FA QR Code"
-                  style={{ borderRadius: 8, border: "1px solid #e2e8f0", padding: 8, background: "#fff" }}
-                />
-              )}
-            </div>
-            <div style={{ background: "#f8fafc", padding: "8px 12px", borderRadius: 6, fontSize: 12, marginBottom: 16, textAlign: "center", wordBreak: "break-all" }}>
-              <span style={{ color: "#64748b" }}>Or enter manually: </span>
-              <code style={{ fontWeight: 600, color: "#0f172a" }}>{secret}</code>
-            </div>
-            <form onSubmit={handleVerify}>
-              <label>
-                2. Enter the 6-digit code from the app:
-                <input
-                  required
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  placeholder="000000"
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-                  autoFocus
-                  style={{ fontSize: 22, letterSpacing: "0.25em", textAlign: "center" }}
-                />
-              </label>
-              <button
-                type="submit"
-                disabled={loading || code.length !== 6}
-                className="btn btn-primary full btn-lg"
-                style={{ marginTop: 12 }}
-              >
-                {loading ? "Verifying…" : "Confirm & Enable 2FA"}
-              </button>
-            </form>
-          </div>
-        )}
-
-        {step === "recovery" && (
-          <div>
-            <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, padding: "10px 14px", color: "#92400e", fontSize: 12, marginBottom: 16 }}>
-              <b>Important:</b> If you lose access to your authenticator, these are the ONLY way to access your account. Store them securely. Each code is single-use.
-            </div>
-            <div
-              style={{
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: 8,
-                padding: "12px 16px",
-                fontFamily: "monospace",
-                fontSize: 13,
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "6px 16px",
-                marginBottom: 16,
-              }}
-            >
-              {recoveryCodes.map((c, i) => (
-                <span key={i} style={{ color: "#0f172a" }}>{c}</span>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="btn btn-white full" onClick={copyCodes}>
-                {copied ? "Copied!" : "Copy all codes"}
-              </button>
-              <button className="btn btn-primary full" onClick={onClose}>
-                Done
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TwoFactorDisableModal({
-  onClose,
-  onSuccess,
-}: {
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
-  const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
-  const handleDisable = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const res = await fetch("/api/auth/2fa/disable", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-gawa-csrf": "1" },
-        body: JSON.stringify({ code }),
-      });
-      const data = await res.json();
-      setLoading(false);
-      if (!res.ok) {
-        setError(data.error || "Failed to disable 2FA");
-        return;
-      }
-      onSuccess();
-      onClose();
-    } catch {
-      setLoading(false);
-      setError("Network error. Please try again.");
-    }
-  };
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.55)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="panel" style={{ maxWidth: 420, width: "100%", padding: 32 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>Disable Two-Factor Auth</h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
-            <X size={20} />
-          </button>
-        </div>
-        <p style={{ color: "#486581", fontSize: 13, marginBottom: 16 }}>
-          To confirm that you want to turn off 2FA, enter the current 6-digit code from your authenticator app (or a recovery code).
-        </p>
-        {error && (
-          <div style={{ padding: "10px 14px", background: "#fef2f2", color: "#b91c1c", borderRadius: 8, fontSize: 13, marginBottom: 14, border: "1px solid #fecaca" }}>
-            {error}
-          </div>
-        )}
-        <form onSubmit={handleDisable}>
-          <label>
-            Authenticator code or recovery code
-            <input
-              required
-              placeholder="000000 or xxxxxx-xxxxxx"
-              value={code}
-              onChange={(e) => setCode(e.target.value)}
-              autoFocus
-            />
-          </label>
-          <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-            <button type="button" className="btn btn-white full" onClick={onClose}>
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={loading || !code.trim()}
-              className="btn btn-primary full"
-              style={{ background: "#dc2626", borderColor: "#dc2626" }}
-            >
-              {loading ? "Disabling…" : "Disable 2FA"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 function SettingsPage({ role, toast }: { role: Role; toast: (message: string) => void }) {
   const { profile, user, refreshProfile } = useAuth();
   const [subTab, setSubTab] = useState<"Profile" | "Notifications" | "Security" | "Billing">("Profile");
@@ -7223,26 +6616,12 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
   const [saving, setSaving] = useState(false);
   const [uploadingKind, setUploadingKind] = useState<"avatar" | "banner" | null>(null);
   const [totpActive, setTotpActive] = useState<boolean | null>(null);
-  const [show2FaSetup, setShow2FaSetup] = useState(false);
-  const [show2FaDisable, setShow2FaDisable] = useState(false);
 
-  // Check 2FA status when Security tab is active
   useEffect(() => {
     if (subTab === "Security" && user) {
-      supabase
-        .from("auth_identity_providers")
-        .select("id")
-        .eq("user_id", user.id)
-        .then(() => {
-          // Check 2FA status via session endpoint
-          fetch("/api/auth/session")
-            .then((r) => r.json())
-            .then(() => {
-              // Read from private.auth_mfa_settings via direct check
-              setTotpActive(false); // default unless set
-            })
-            .catch(() => {});
-        });
+      supabase.auth.mfa.listFactors().then(({ data, error }) => {
+        if (!error) setTotpActive(Boolean(data.totp.some(f => f.status === "verified")));
+      });
     }
   }, [subTab, user]);
 
@@ -7542,24 +6921,6 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
           )}
           {subTab === "Security" && (
             <>
-              {show2FaSetup && (
-                <TwoFactorSetupModal
-                  onClose={() => setShow2FaSetup(false)}
-                  onSuccess={() => {
-                    setTotpActive(true);
-                    toast("Two-Factor Authentication enabled!");
-                  }}
-                />
-              )}
-              {show2FaDisable && (
-                <TwoFactorDisableModal
-                  onClose={() => setShow2FaDisable(false)}
-                  onSuccess={() => {
-                    setTotpActive(false);
-                    toast("Two-Factor Authentication disabled.");
-                  }}
-                />
-              )}
               <div className="panel-title">
                 <div>
                   <b>Account security</b>
@@ -7592,25 +6953,7 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
                 </div>
 
                 <div style={{ paddingTop: 8 }}>
-                  {totpActive ? (
-                    <button
-                      type="button"
-                      className="btn btn-white"
-                      style={{ color: "#b91c1c", borderColor: "#fecaca", fontSize: 13 }}
-                      onClick={() => setShow2FaDisable(true)}
-                    >
-                      Disable 2FA
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn btn-primary"
-                      style={{ fontSize: 13 }}
-                      onClick={() => setShow2FaSetup(true)}
-                    >
-                      <ShieldCheck size={15} /> Set up Two-Factor Authentication
-                    </button>
-                  )}
+                  <p style={{ fontSize: 13 }}>Google Authenticator is required for regular logins. Disabling it is not available under this policy.</p>
                 </div>
               </div>
 
@@ -8220,12 +7563,16 @@ export default function App() {
     );
   }
 
+  if (auth.user && !auth.mfaVerified) {
+    return <AuthenticatorGate onVerified={auth.refreshProfile} onCancel={logout} />;
+  }
+
   // Strictly enforce database role when authenticated
   const activeRole: Role = auth.user ? auth.role : role;
 
   return (
     <>
-      <div key={view} className="view-transition-wrap">
+      <div key={view} className={view === "app" ? "app-view" : "view-transition-wrap"}>
         {view === "landing" && <Landing onNavigate={navigate} projects={projectsList} />}
         {(view === "login" || view === "register") && (
           <Auth

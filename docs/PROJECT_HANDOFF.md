@@ -207,6 +207,35 @@ For each screen, verify permissions, save-and-reload persistence, error/loading/
 - RLS protects browser access; secret-key handlers must independently enforce caller roles, status, ownership and row relationships. Use transactional workflows and validate every returned error.
 - Do not present prototype data, fixed matching scores, fake verification or contract commitments as real operational facts. The audit lists the existing places needing repair.
 
+
+## Authentication update — November 20, 2026
+
+The current working implementation replaces the legacy custom OTP/TOTP login handlers with native Supabase Auth email confirmation and MFA. Legacy `/api/auth/login`, `/api/auth/otp/*`, and `/api/auth/2fa/*` endpoints return 410; the browser now calls Supabase Auth directly for password login, signup-link confirmation/resend and TOTP enrollment/challenge. Legacy custom TOTP secrets/recovery codes are not native factors; affected users must enroll once in the new flow. There is no disable-2FA button under this mandatory policy.
+
+Expected path: **signup → email verification link → required Google Authenticator enrollment → onboarding/app**. Returning users use **password → Google Authenticator code**. There is no email or SMS fallback for regular login. AAL1 sessions see only the enrollment/challenge gate; application API authorization requires a verified Supabase AAL2 token and active account.
+
+Signup mail is sent by Supabase Auth using its **Dashboard Custom SMTP settings**, not the application's local `SMTP_*` environment alone. Configure sender/name as `gawa.verify@gmail.com` / `GAWA Verification`, Gmail SMTP host `smtp.gmail.com`, port 587 and the Gmail App Password. Enable signup email confirmation and TOTP enrollment/verification in the dashboard. Confirm-signup email subject can be `Confirm your GAWA account`; retain the confirmation link using `{{ .ConfirmationURL }}`. Signup does not ask users to enter an email OTP. Add the deployed app origin (and `http://localhost:3000` for local testing) to the allowed Supabase redirect URLs. Never put the App Password into templates or source control. The owner reported receiving a verification link and chose to keep link-based signup confirmation. The updated UI matches that email format; a complete confirmation-to-Authenticator test still needs manual verification.
+
+**Database rollout completed November 20, 2026:** `supabase/migrations/20261120103231_mandatory_authenticator.sql` was applied to the live project and registered in migration history using the owner's explicitly authorized `DATABASE_URL` fallback (the `gawa-db` MCP server was unavailable). Do not reapply this migration. Its 168 restrictive policies require AAL2 in addition to existing ownership policies, while permitting the caller's own identity/role/status reads needed for enrollment and public catalog access. Five public legacy custom-auth tables were also made server-only. Disposable PostgreSQL tests and live non-mutating role/claim simulations passed: AAL1 protected-data denial, AAL2 owner access, and unchanged anonymous catalogs. No user/project rows were modified. Actual signup email delivery and an end-to-end Authenticator scan/login still need manual verification.
+
+Verification commands: `pnpm test:auth`; `pnpm build`; and `node scripts/validate-mfa-policy.mjs /path/to/@electric-sql/pglite/dist/index.js` for disposable PostgreSQL policy tests. A Gmail SMTP self-test already succeeded for the separate app mail sender; this does not certify Supabase's signup delivery settings.
+
+## GAWA interaction and spacing update — November 20, 2026
+
+The UI now uses a more spacious rhythm: 38 px desktop page top padding, 26–30 px panels, 22–28 px grid gaps, taller header and more breathing room between headings, forms and content. Mobile layouts use 18–24 px page gutters and single-column cards. Preserve this rather than reinstating the earlier compact 100vh-fit overrides. Brand colors/font remain unchanged.
+
+Three linked GAWA interactions use existing records with no new database tables:
+
+- **Tatak GAWA** in My Portfolio: a passport booklet with selectable skill/work/feedback stamps, evidence details, cover toggle and earned-record filter. Self-declared, pending, expired and rejected skills do not become verified badges; portfolio work is not automatically assigned to a particular skill. The Galing/Aksyon/Patunay thread reflects real evidence presence, not certification levels.
+- **Fit Lens** in Explore Projects: focus on chosen profile skills; project results show matched and other required skills. Exact case-insensitive skill overlap is used, not a fabricated AI score. Existing search/category/saved filters continue to apply, and Reset clears the lens.
+- **Delivery Trail** in Active Projects: select a real milestone to focus its checklist and inspect linked deliverables. New tasks are assigned to the focused milestone. Switching contracts clears the focus. Empty projects do not show fabricated progress.
+
+The landing page also uses the **GAWA Fieldnotes** interactive notebook, with selectable Galing/Aksyon/Patunay chapters and illustrative strengths. It replaces the generic hero dashboard mockup. The hero now reads “Galing mo. Gawa mo. Patunay mo.” and a navy manifesto band reinforces proof of work. Illustrations are clearly marked as examples, not real listings or credentials.
+
+The sidebar is fixed to `100dvh`; its navigation list can scroll independently on short screens while the account footer remains visible. The authenticated app uses an unanimated `.app-view` wrapper because transformed ancestors make fixed-position children scroll with the document. Do not reintroduce the slide animation around the full app shell.
+
+Source components are in `src/components/gawa/`. `tests/gawa-evidence.test.mjs` checks skill overlap, evidence status/expiry/provenance and safe work links. Browser QA used isolated sample records outside the repository, plus the actual public landing page; it did not impersonate a user or modify live data.
+
 ## 8. Copyable prompt for the next AI
 
 > Continue the existing GAWA project on branch Yap. First read AGENTS.md, docs/PROJECT_HANDOFF.md, docs/DATABASE_WIRING.md and docs/DATABASE_WIRING_AUDIT.md, then inspect the relevant source files. Preserve the existing GAWA identity, Plus Jakarta Sans typography, navy #073B57 sidebar, blue #087EAD actions, cyan #22B8E6 accents, light #F6F9FC background, white rounded cards, Lucide icons and responsive layouts. Preserve the talent/business/admin journeys and the twelve core modules defined in the handoff, including Portfolio/Skill Passport and Skill Assessment/Verification. Treat the existing audit defects as bugs to repair, not functionality to reproduce. Do not redesign the product, invent unrelated features, expose secrets, fabricate verification/match/reputation/payment data or claim a feature works without checking persistence and permissions. Use the project's gawa-db MCP for database work. For my requested change, explain what you changed, what you verified and any remaining limitations.
