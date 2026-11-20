@@ -1,9 +1,11 @@
 export type Project = {
-  id: number;
+  id: string | number;
   title: string;
   company: string;
   initials: string;
   color: string;
+  avatarUrl?: string | null;
+  ownerId?: string | null;
   description: string;
   budget: number;
   duration: string;
@@ -13,274 +15,54 @@ export type Project = {
   category: string;
   posted: string;
   featured?: boolean;
+  workSetup?: string;
+  objectives?: string[];
+  deliverables?: string[];
+  deadline?: string;
+  status?: string;
 };
 
-export const projects: Project[] = [
-  {
-    id: 1,
-    title: "E-Commerce Website Development",
-    company: "SariSari Studio",
-    initials: "SS",
-    color: "#087EAD",
-    description: "Build a fast, mobile-first storefront for a growing local lifestyle brand.",
-    budget: 15000,
-    duration: "4–6 weeks",
-    skills: ["React", "JavaScript", "UI Design"],
-    applicants: 12,
-    match: 96,
-    category: "Development",
-    posted: "2h ago",
-    featured: true,
-  },
-  {
-    id: 2,
-    title: "Social Media Branding Package",
-    company: "Kape Norte Co.",
-    initials: "KN",
-    color: "#805AD5",
-    description: "Create a cohesive social identity and launch kit for a specialty coffee brand.",
-    budget: 5000,
-    duration: "2 weeks",
-    skills: ["Canva", "Branding", "Graphic Design"],
-    applicants: 8,
-    match: 91,
-    category: "Design",
-    posted: "5h ago",
-  },
-  {
-    id: 3,
-    title: "Sales Dashboard Development",
-    company: "Tindahan Labs",
-    initials: "TL",
-    color: "#0F9D78",
-    description: "Transform sales data into a clear and actionable executive dashboard.",
-    budget: 12000,
-    duration: "3 weeks",
-    skills: ["SQL", "Power BI", "Data Analytics"],
-    applicants: 6,
-    match: 88,
-    category: "Data",
-    posted: "1d ago",
-  },
-  {
-    id: 4,
-    title: "Promotional Video Editing",
-    company: "Lakbay Lokal",
-    initials: "LL",
-    color: "#F59E0B",
-    description: "Edit campaign footage into three social-ready destination videos.",
-    budget: 4500,
-    duration: "10 days",
-    skills: ["Video Editing", "Motion Graphics"],
-    applicants: 15,
-    match: 83,
-    category: "Creative",
-    posted: "1d ago",
-  },
-  {
-    id: 5,
-    title: "Mobile App UI/UX Design",
-    company: "Alaga Health",
-    initials: "AH",
-    color: "#E0527D",
-    description: "Design a caring and accessible mobile experience for community health.",
-    budget: 10000,
-    duration: "4 weeks",
-    skills: ["Figma", "Wireframing", "Prototyping"],
-    applicants: 9,
-    match: 94,
-    category: "Design",
-    posted: "2d ago",
-    featured: true,
-  },
-  {
-    id: 6,
-    title: "SEO Content Writing",
-    company: "Habi Home",
-    initials: "HH",
-    color: "#B7791F",
-    description: "Write search-optimized stories about Filipino craft and conscious homes.",
-    budget: 6000,
-    duration: "3 weeks",
-    skills: ["SEO", "Content Writing"],
-    applicants: 21,
-    match: 79,
-    category: "Writing",
-    posted: "2d ago",
-  },
-  {
-    id: 7,
-    title: "Customer Survey Analysis",
-    company: "BayanBox",
-    initials: "BB",
-    color: "#2563EB",
-    description: "Analyze customer feedback and present practical growth recommendations.",
-    budget: 7500,
-    duration: "2 weeks",
-    skills: ["Excel", "Research", "Data Analytics"],
-    applicants: 7,
-    match: 86,
-    category: "Data",
-    posted: "3d ago",
-  },
-  {
-    id: 8,
-    title: "Launch Campaign Strategy",
-    company: "Luntian Goods",
-    initials: "LG",
-    color: "#16A34A",
-    description: "Plan a lean digital launch for a sustainable personal care line.",
-    budget: 9000,
-    duration: "3 weeks",
-    skills: ["Digital Marketing", "Strategy"],
-    applicants: 13,
-    match: 82,
-    category: "Marketing",
-    posted: "3d ago",
-  },
-  {
-    id: 9,
-    title: "WordPress Site Refresh",
-    company: "Mesa & Co.",
-    initials: "MC",
-    color: "#475569",
-    description: "Refresh a restaurant group website with a modern visual system.",
-    budget: 8500,
-    duration: "3 weeks",
-    skills: ["WordPress", "CSS", "UI Design"],
-    applicants: 17,
-    match: 90,
-    category: "Development",
-    posted: "4d ago",
-  },
-  {
-    id: 10,
-    title: "Product Photography Retouching",
-    company: "Ginto Jewelry",
-    initials: "GJ",
-    color: "#A16207",
-    description: "Polish product images for a premium catalog and social launch.",
-    budget: 4000,
-    duration: "1 week",
-    skills: ["Photoshop", "Retouching"],
-    applicants: 11,
-    match: 75,
-    category: "Creative",
-    posted: "5d ago",
-  },
-];
+export type Talent = {
+  id?: string;
+  name: string;
+  role: string;
+  school: string;
+  skills: string[];
+  rating: number;
+  projects: number;
+  match: number;
+  initials: string;
+  color: string;
+  avatarUrl?: string | null;
+  bannerUrl?: string | null;
+};
 
-export const talents = [
-  {
-    name: "Mika Reyes",
-    role: "UI/UX Designer",
-    school: "De La Salle University",
-    skills: ["Figma", "Prototyping", "Research"],
-    rating: 4.9,
-    projects: 12,
-    match: 97,
-    initials: "MR",
-    color: "#087EAD",
-  },
-  {
-    name: "Paolo Santos",
-    role: "Frontend Developer",
-    school: "University of the Philippines",
-    skills: ["React", "TypeScript", "Tailwind"],
-    rating: 4.8,
-    projects: 9,
-    match: 95,
-    initials: "PS",
-    color: "#805AD5",
-  },
-  {
-    name: "Alyssa Cruz",
-    role: "Brand Designer",
-    school: "UST",
-    skills: ["Branding", "Illustrator", "Canva"],
-    rating: 5.0,
-    projects: 16,
-    match: 93,
-    initials: "AC",
-    color: "#E0527D",
-  },
-  {
-    name: "Joaquin Lim",
-    role: "Data Analyst",
-    school: "Ateneo de Manila University",
-    skills: ["Power BI", "SQL", "Python"],
-    rating: 4.8,
-    projects: 7,
-    match: 91,
-    initials: "JL",
-    color: "#16A34A",
-  },
-  {
-    name: "Bea Mendoza",
-    role: "Content Strategist",
-    school: "Mapúa University",
-    skills: ["SEO", "Copywriting", "Strategy"],
-    rating: 4.7,
-    projects: 10,
-    match: 88,
-    initials: "BM",
-    color: "#F59E0B",
-  },
-  {
-    name: "Gab Villanueva",
-    role: "Video Editor",
-    school: "CIIT Philippines",
-    skills: ["Premiere Pro", "Motion", "Storytelling"],
-    rating: 4.9,
-    projects: 14,
-    match: 87,
-    initials: "GV",
-    color: "#0F9D78",
-  },
-  {
-    name: "Nicole Tan",
-    role: "Digital Marketer",
-    school: "FEU",
-    skills: ["Meta Ads", "Analytics", "Content"],
-    rating: 4.6,
-    projects: 8,
-    match: 85,
-    initials: "NT",
-    color: "#2563EB",
-  },
-  {
-    name: "Luis Garcia",
-    role: "Full-stack Developer",
-    school: "PUP",
-    skills: ["Node.js", "React", "PostgreSQL"],
-    rating: 4.9,
-    projects: 11,
-    match: 84,
-    initials: "LG",
-    color: "#475569",
-  },
-  {
-    name: "Sam Torres",
-    role: "Graphic Designer",
-    school: "Benilde",
-    skills: ["Photoshop", "Branding", "Layout"],
-    rating: 4.8,
-    projects: 18,
-    match: 82,
-    initials: "ST",
-    color: "#A16207",
-  },
-  {
-    name: "Iana Flores",
-    role: "Product Researcher",
-    school: "UP Open University",
-    skills: ["Research", "Testing", "Insights"],
-    rating: 4.7,
-    projects: 6,
-    match: 80,
-    initials: "IF",
-    color: "#DB2777",
-  },
-];
+export type TalentApplication = {
+  id: string;
+  project_id: string;
+  proposal: string;
+  status: "submitted" | "shortlisted" | "interview" | "accepted" | "rejected" | "withdrawn";
+  proposed_budget: number;
+  submitted_at: string;
+  appliedAgo: string;
+  project: Project;
+};
 
-export const php = (value: number) => `₱${value.toLocaleString("en-PH")}`;
+export type BusinessApplication = {
+  id: string;
+  project_id: string;
+  project_title: string;
+  talent_id: string;
+  proposal: string;
+  status: "submitted" | "shortlisted" | "interview" | "accepted" | "rejected" | "withdrawn";
+  proposed_budget: number;
+  submitted_at: string;
+  appliedAgo: string;
+  talent: Talent;
+};
+
+export const projects: Project[] = [];
+
+export const talents: Talent[] = [];
+
+export const php = (value: number) => `₱${Number(value || 0).toLocaleString("en-PH")}`;
