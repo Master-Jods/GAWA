@@ -55,23 +55,23 @@ export function AuthenticatorGate({ onVerified, onCancel }: {
     finally { setBusy(false); }
   };
 
-  return <main className="auth-main" style={{ minHeight: "100vh", background: "#f6f9fc" }}>
-    <section className="panel" style={{ padding: 32, maxWidth: 480, width: "100%" }}>
+  return <main className="auth-main view-transition-wrap" style={{ minHeight: "100vh", background: "#F1E4D1" }}>
+    <section className="panel gawa-modal-panel" key={factorId ? (enrollment ? "enroll" : "verify") : "prompt"} style={{ padding: 32, maxWidth: 480, width: "100%", background: "#FFFDF9", borderColor: "#E2D2BC" }}>
       <span className="auth-kicker">GAWA ACCOUNT SECURITY</span>
       <h1 style={{ fontSize: 26, margin: "12px 0" }}>{factorId && !enrollment ? "Enter your Authenticator code" : "Set up Google Authenticator"}</h1>
       <p style={{ marginBottom: 20 }}>Regular logins require your password and the current code from Google Authenticator. Email is used to verify your account at signup.</p>
-      {error && <p role="alert" style={{ color: "#b91c1c", marginBottom: 16 }}>{error}</p>}
-      {!ready ? <p>Checking account security…</p> : !factorId ?
-        <button className="btn btn-primary full" disabled={busy} onClick={enroll}>{busy ? "Preparing…" : "Set up Authenticator"}</button> :
-        <form onSubmit={verify}>
+      {error && <p role="alert" className="gawa-alert-banner gawa-alert-error" style={{ color: "#b91c1c", background: "#fef2f2", border: "1px solid #fecaca", padding: "10px 14px", borderRadius: 10, marginBottom: 16 }}>{error}</p>}
+      {!ready ? <p className="gawa-step-transition">Checking account security…</p> : !factorId ?
+        <button className={`btn btn-primary full ${busy ? "is-loading" : ""}`} disabled={busy} onClick={enroll}>{busy ? "Preparing…" : "Set up Authenticator"}</button> :
+        <form className="gawa-step-transition" onSubmit={verify}>
           {enrollment && <>
             <p>In Google Authenticator, tap + and scan this QR code, or enter the setup key manually.</p>
-            <img src={enrollment.qr_code.startsWith("data:") ? enrollment.qr_code : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(enrollment.qr_code)}`} width={200} height={200} alt="Scan with Google Authenticator" style={{ margin: "16px auto" }} />
+            <img className="gawa-item-enter" src={enrollment.qr_code.startsWith("data:") ? enrollment.qr_code : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(enrollment.qr_code)}`} width={200} height={200} alt="Scan with Google Authenticator" style={{ margin: "16px auto", borderRadius: 12, padding: 8, background: "#FFF", border: "1px solid #E2D2BC" }} />
             <p style={{ overflowWrap: "anywhere", marginBottom: 20 }}><b>Setup key:</b> {enrollment.secret}</p>
             <p>Keep your Authenticator account backed up. This flow does not issue the legacy custom recovery codes.</p>
           </>}
-          <label>Authenticator code<input autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} required style={{ width: "100%", padding: 12, border: "1px solid #dce7ed", borderRadius: 10, margin: "8px 0 16px" }} /></label>
-          <button className="btn btn-primary full" disabled={busy || code.length !== 6}>{busy ? "Verifying…" : "Verify and continue"}</button>
+          <label>Authenticator code<input autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ""))} required style={{ width: "100%", padding: 12, border: "1px solid #E2D2BC", borderRadius: 10, margin: "8px 0 16px" }} /></label>
+          <button className={`btn btn-primary full ${busy ? "is-loading" : ""}`} disabled={busy || code.length !== 6}>{busy ? "Verifying…" : "Verify and continue"}</button>
         </form>}
       <button className="btn btn-ghost full" style={{ marginTop: 12 }} onClick={onCancel}>Sign out</button>
     </section>

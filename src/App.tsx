@@ -137,11 +137,9 @@ const adminNav = [
 
 function Logo({ light = false }: { light?: boolean }) {
   return (
-    <button className="logo" onClick={() => location.reload()} aria-label="GAWA home">
+    <button className={`logo ${light ? "logo-light" : ""}`} onClick={() => location.reload()} aria-label="GAWA home">
       <span className="logo-mark">
-        <span></span>
-        <span></span>
-        <span></span>
+        <img src="/logo-mark.png" alt="GAWA mark" className="logo-mark-img" />
       </span>
       <span className={light ? "text-white" : ""}>GAWA</span>
     </button>
@@ -150,7 +148,7 @@ function Logo({ light = false }: { light?: boolean }) {
 
 function Avatar({
   initials,
-  color = "#087EAD",
+  color = "#162660",
   size = "md",
   src,
 }: {
@@ -159,12 +157,12 @@ function Avatar({
   size?: "sm" | "md" | "lg";
   src?: string | null;
 }) {
-  const safeColor = color || "#087EAD";
+  const safeColor = color || "#162660";
   return (
     <span
       className={`avatar avatar-${size}`}
       style={{
-        background: `linear-gradient(135deg, ${safeColor}, color-mix(in srgb, ${safeColor} 65%, #073B57))`,
+        background: `linear-gradient(135deg, ${safeColor}, color-mix(in srgb, ${safeColor} 65%, #0F1B46))`,
       }}
     >
       {src ? <img src={src} alt={initials} /> : initials}
@@ -376,7 +374,7 @@ function Landing({
         </section>
 
         <section className="gawa-manifesto" aria-label="The GAWA promise">
-          <div><span className="gawa-manifesto-mark" aria-hidden="true"><i/><i/><i/></span><b>Potential deserves<br/>a place to begin.</b></div>
+          <div><span className="gawa-manifesto-mark" aria-hidden="true"><img src="/logo-mark.png" alt="" className="logo-mark-img" /></span><b>Potential deserves<br/>a place to begin.</b></div>
           <p>For the first brief. The first collaboration.<br/>The first piece of work that says, <em>“Ako ang gumawa.”</em></p>
           <span className="gawa-manifesto-signature">Made of skill.<br/><strong>Built through action.</strong></span>
         </section>
@@ -547,7 +545,7 @@ function Landing({
                 "Mika Reyes",
                 "UI/UX Designer · DLSU",
                 "MR",
-                "#087EAD",
+                "#162660",
               ],
               [
                 "“We found an excellent developer in days, and the milestone workflow kept everything clear.”",
@@ -632,7 +630,9 @@ function HeroVisual() {
     <div className="hero-visual">
       <div className="dashboard-mock">
         <div className="mock-sidebar">
-          <div className="mini-logo">G</div>
+          <div className="mini-logo">
+            <img src="/logo-mark.png" alt="GAWA" className="w-5 h-5 object-contain" />
+          </div>
           {[Home, Search, BriefcaseBusiness, MessageSquare, UserCheck].map((I, i) => (
             <span
               className={i === mockTab ? "active" : ""}
@@ -753,14 +753,16 @@ function ForgotPasswordModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
+      className="gawa-modal-backdrop"
       style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+        position: "fixed", inset: 0, background: "rgba(14, 25, 66, 0.52)",
+        backdropFilter: "blur(6px)",
         display: "flex", alignItems: "center", justifyContent: "center",
         zIndex: 1000, padding: 16,
       }}
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="panel" style={{ maxWidth: 420, width: "100%", padding: 32 }}>
+      <div className="panel gawa-modal-panel" style={{ maxWidth: 420, width: "100%", padding: 32 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: 20 }}>Reset password</h2>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer" }}>
@@ -768,19 +770,19 @@ function ForgotPasswordModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
         {submitted ? (
-          <div>
-            <div style={{ background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 8, padding: "12px 16px", color: "#1d4ed8", fontSize: 14, marginBottom: 20 }}>
+          <div key="reset-done" className="gawa-step-transition">
+            <div className="gawa-alert-banner gawa-alert-info" style={{ background: "#D0E6FD", border: "1px solid #9AC6F9", borderRadius: 10, padding: "12px 16px", color: "#162660", fontSize: 14, marginBottom: 20 }}>
               If that email address is registered, we've sent instructions to reset your password. Check your inbox.
             </div>
             <button className="btn btn-primary full" onClick={onClose}>Close</button>
           </div>
         ) : (
-          <form onSubmit={handleSubmit}>
-            <p style={{ color: "#627d98", fontSize: 14, marginBottom: 20 }}>
+          <form key="reset-form" className="gawa-step-transition" onSubmit={handleSubmit}>
+            <p style={{ color: "#475785", fontSize: 14, marginBottom: 20 }}>
               Enter your registered email and we'll send a secure reset link.
             </p>
             {error && (
-              <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", color: "#b91c1c", fontSize: 13, marginBottom: 14 }}>
+              <div className="gawa-alert-banner gawa-alert-error" style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "10px 14px", color: "#b91c1c", fontSize: 13, marginBottom: 14 }}>
                 {error}
               </div>
             )}
@@ -798,7 +800,7 @@ function ForgotPasswordModal({ onClose }: { onClose: () => void }) {
             <button
               type="submit"
               disabled={submitting}
-              className="btn btn-primary full btn-lg"
+              className={`btn btn-primary full btn-lg ${submitting ? "is-loading" : ""}`}
               style={{ marginTop: 8 }}
             >
               {submitting ? "Sending…" : "Send reset link"} <ArrowRight size={17} />
@@ -1033,11 +1035,12 @@ function Auth({
               )}
               {authError && (
                 <div
+                  className="gawa-alert-banner gawa-alert-error"
                   style={{
                     padding: "10px 14px",
                     background: "#fef2f2",
                     color: "#b91c1c",
-                    borderRadius: 8,
+                    borderRadius: 10,
                     fontSize: 13,
                     marginBottom: 14,
                     border: "1px solid #fecaca",
@@ -1048,14 +1051,15 @@ function Auth({
               )}
               {infoMessage && (
                 <div
+                  className="gawa-alert-banner gawa-alert-info"
                   style={{
                     padding: "10px 14px",
-                    background: "#eff6ff",
-                    color: "#1d4ed8",
-                    borderRadius: 8,
+                    background: "#D0E6FD",
+                    color: "#162660",
+                    borderRadius: 10,
                     fontSize: 13,
                     marginBottom: 14,
-                    border: "1px solid #bfdbfe",
+                    border: "1px solid #9AC6F9",
                   }}
                 >
                   {infoMessage}
@@ -1114,10 +1118,10 @@ function Auth({
               <button
                 type="submit"
                 disabled={submitting}
-                className="btn btn-primary full btn-lg"
+                className={`btn btn-primary full btn-lg ${submitting ? "is-loading" : ""}`}
               >
                 {submitting
-                  ? "Please wait..."
+                  ? "Signing you in…"
                   : currentMode === "login"
                   ? "Log in"
                   : "Create account"}{" "}
@@ -1128,7 +1132,7 @@ function Auth({
               </div>
               <button
                 type="button"
-                className="btn btn-white full"
+                className={`btn btn-white full ${googleLoading ? "is-loading" : ""}`}
                 onClick={handleGoogleSignIn}
                 disabled={googleLoading}
               >
@@ -1305,7 +1309,7 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
             <i style={{ width: `${(step / max) * 100}%` }}></i>
           </div>
           {step < max ? (
-            <div className="onboarding-form">
+            <div key={`onboarding-step-${step}`} className="onboarding-form gawa-step-transition">
               <span className="auth-kicker">{steps[step - 1].toUpperCase()}</span>
               <h1>
                 {role === "talent"
@@ -1498,7 +1502,7 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
               </div>
             </div>
           ) : (
-            <div className="completion">
+            <div key="onboarding-complete" className="completion gawa-step-transition">
               <div className="completion-icon">
                 <Check />
               </div>
@@ -1517,7 +1521,7 @@ function Onboarding({ role, onDone }: { role: Role; onDone: () => void }) {
                 </span>
               </div>
               <button
-                className="btn btn-primary btn-lg"
+                className={`btn btn-primary btn-lg ${saving ? "is-loading" : ""}`}
                 disabled={saving}
                 onClick={saveOnboarding}
               >
@@ -1742,16 +1746,17 @@ function Shell({
             </button>
             {notifOpen && (
               <div
+                className="gawa-popover-enter"
                 style={{
                   position: "absolute",
                   top: "calc(100% + 10px)",
                   right: 0,
                   width: 320,
-                  background: "white",
-                  borderRadius: 12,
-                  boxShadow: "0 12px 32px rgba(16,42,67,0.14)",
-                  border: "1px solid #dce7ed",
-                  padding: 12,
+                  background: "#FFFDF9",
+                  borderRadius: 14,
+                  boxShadow: "0 18px 40px -8px rgba(22,38,96,0.18)",
+                  border: "1px solid #E2D2BC",
+                  padding: 14,
                   zIndex: 50,
                 }}
               >
@@ -1761,21 +1766,21 @@ function Shell({
                     justifyContent: "space-between",
                     alignItems: "center",
                     paddingBottom: 8,
-                    borderBottom: "1px solid #f0f4f8",
+                    borderBottom: "1px solid #E2D2BC",
                     marginBottom: 8,
                   }}
                 >
-                  <b style={{ fontSize: 13, color: "#102a43" }}>Notifications</b>
+                  <b style={{ fontSize: 13, color: "#162660" }}>Notifications</b>
                   <button
                     type="button"
-                    style={{ fontSize: 12, color: "#087EAD", background: "none", border: "none", cursor: "pointer" }}
+                    style={{ fontSize: 12, color: "#162660", fontWeight: 700, background: "none", border: "none", cursor: "pointer" }}
                     onClick={() => setNotifOpen(false)}
                   >
                     Close
                   </button>
                 </div>
                 {notifications.length === 0 ? (
-                  <p style={{ fontSize: 12, color: "#627d98", textAlign: "center", padding: "16px 8px" }}>
+                  <p style={{ fontSize: 12, color: "#6876A1", textAlign: "center", padding: "16px 8px" }}>
                     No notifications yet.
                   </p>
                 ) : (
@@ -1783,16 +1788,18 @@ function Shell({
                     {notifications.map((n) => (
                       <div
                         key={n.id}
+                        className="gawa-item-enter"
                         style={{
-                          padding: "8px 10px",
-                          borderRadius: 8,
-                          background: n.read_at ? "#f8fafc" : "#eff6ff",
+                          padding: "10px 12px",
+                          borderRadius: 10,
+                          background: n.read_at ? "#FAF5EE" : "#D0E6FD",
+                          border: n.read_at ? "1px solid #E2D2BC" : "1px solid #9AC6F9",
                           fontSize: 12,
                         }}
                       >
-                        <b style={{ display: "block", color: "#102a43" }}>{n.title}</b>
-                        <span style={{ color: "#486581" }}>{n.body}</span>
-                        <small style={{ display: "block", color: "#829ab1", marginTop: 4 }}>
+                        <b style={{ display: "block", color: "#162660" }}>{n.title}</b>
+                        <span style={{ color: "#3F4F80" }}>{n.body}</span>
+                        <small style={{ display: "block", color: "#6876A1", marginTop: 4 }}>
                           {formatRelativeTime(n.created_at)}
                         </small>
                       </div>
@@ -3337,7 +3344,7 @@ function ActiveProject({
                           gap: 6,
                           fontSize: 12,
                           fontWeight: 700,
-                          color: "#087EAD",
+                          color: "#162660",
                         }}
                       >
                         Open deliverable link <ArrowRight size={13} />
@@ -3356,7 +3363,7 @@ function ActiveProject({
             <div>
               <Avatar
                 initials={getInitials(businessName)}
-                color={proj.business?.avatar_color || "#087EAD"}
+                color={proj.business?.avatar_color || "#162660"}
               />
               <span>
                 <b>{businessName}</b>
@@ -3386,7 +3393,7 @@ function ActiveProject({
           <div className="panel deliverable" style={{ padding: 20 }}>
             <b>Contract & Escrow Summary</b>
             <span>{php(agreedAmount)}</span>
-            <small style={{ color: activeContract.status === "completed" ? "#16a34a" : "#087ead" }}>
+            <small style={{ color: activeContract.status === "completed" ? "#16a34a" : "#162660" }}>
               {activeContract.status === "completed"
                 ? "Escrow released · Contract completed"
                 : "Protected in GAWA Escrow"}
@@ -3809,7 +3816,7 @@ function Messages({ toast }: { toast?: (s: string) => void }) {
             }}
           >
             <div style={{ maxWidth: 360 }}>
-              <MessageSquare size={42} style={{ margin: "0 auto 14px", color: "#087ead" }} />
+              <MessageSquare size={42} style={{ margin: "0 auto 14px", color: "#162660" }} />
               <h3 style={{ color: "#102a43", fontSize: 18, marginBottom: 8 }}>
                 Your GAWA Inbox
               </h3>
@@ -3890,7 +3897,7 @@ function Messages({ toast }: { toast?: (s: string) => void }) {
                       <b>{c.name}</b>
                       <small>{c.role} account</small>
                     </div>
-                    {recipientId === c.id && <Check size={16} color="#087ead" />}
+                    {recipientId === c.id && <Check size={16} color="#162660" />}
                   </button>
                 ))
               )}
@@ -5239,7 +5246,7 @@ function BusinessOverview({
             const bg =
               completedCount + activeCount + draftCount === 0
                 ? "conic-gradient(#e6eff4 0deg 360deg)"
-                : `conic-gradient(#16a34a 0deg ${compDeg}deg, #087ead ${compDeg}deg ${actDeg}deg, #cbdbe5 ${actDeg}deg 360deg)`;
+                : `conic-gradient(#16a34a 0deg ${compDeg}deg, #162660 ${compDeg}deg ${actDeg}deg, #D0E6FD ${actDeg}deg 360deg)`;
             return (
               <div className="donut-wrap">
                 <div className="donut" style={{ background: bg }}>
@@ -5416,7 +5423,7 @@ function PostProject({
         title: data.project.title,
         company: companyName,
         initials: getInitials(companyName),
-        color: data.project.business?.avatar_color || "#087EAD",
+        color: data.project.business?.avatar_color || "#162660",
         description: finalDesc,
         budget: Number(data.project.budget),
         duration,
@@ -6285,7 +6292,7 @@ function Analytics({
   const donutBg =
     completedCount + activeCount + draftCount === 0
       ? "conic-gradient(#e6eff4 0deg 360deg)"
-      : `conic-gradient(#16a34a 0deg ${compDeg}deg, #087ead ${compDeg}deg ${actDeg}deg, #cbdbe5 ${actDeg}deg 360deg)`;
+      : `conic-gradient(#16a34a 0deg ${compDeg}deg, #162660 ${compDeg}deg ${actDeg}deg, #D0E6FD ${actDeg}deg 360deg)`;
 
   return (
     <main className="page">
@@ -6940,7 +6947,7 @@ function SettingsPage({ role, toast }: { role: Role; toast: (message: string) =>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                   <div>
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                      <LockKeyhole size={18} style={{ color: "#087EAD" }} />
+                      <LockKeyhole size={18} style={{ color: "#162660" }} />
                       <b style={{ fontSize: 15 }}>Google Authenticator (2FA)</b>
                     </div>
                     <p style={{ margin: 0, fontSize: 13, color: "#627d98" }}>
@@ -7557,14 +7564,24 @@ export default function App() {
 
   if (auth.loading) {
     return (
-      <div style={{ display: "grid", placeItems: "center", height: "100vh" }}>
-        <p style={{ color: "#486779", fontSize: 14 }}>Loading…</p>
+      <div className="gawa-boot-loader">
+        <div className="gawa-boot-card">
+          <span className="logo-mark gawa-boot-mark">
+            <img src="/logo-mark.png" alt="GAWA" className="logo-mark-img" />
+          </span>
+          <b>GAWA</b>
+          <span>Preparing your workspace…</span>
+        </div>
       </div>
     );
   }
 
   if (auth.user && !auth.mfaVerified) {
-    return <AuthenticatorGate onVerified={auth.refreshProfile} onCancel={logout} />;
+    return (
+      <div key="mfa-gate" className="view-transition-wrap">
+        <AuthenticatorGate onVerified={auth.refreshProfile} onCancel={logout} />
+      </div>
+    );
   }
 
   // Strictly enforce database role when authenticated
@@ -7572,7 +7589,7 @@ export default function App() {
 
   return (
     <>
-      <div key={view} className={view === "app" ? "app-view" : "view-transition-wrap"}>
+      <div key={view} className={view === "app" ? "app-view gawa-workspace-enter" : "view-transition-wrap"}>
         {view === "landing" && <Landing onNavigate={navigate} projects={projectsList} />}
         {(view === "login" || view === "register") && (
           <Auth

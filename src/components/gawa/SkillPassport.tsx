@@ -83,9 +83,7 @@ export function SkillPassport({
         <aside className="passport-identity">
           <div className="passport-brand">
             <span className="passport-brand-mark">
-              <i />
-              <i />
-              <i />
+              <img src="/logo-mark.png" alt="" className="logo-mark-img" />
             </span>{" "}
             GAWA <span>SKILL PASSPORT</span>
           </div>

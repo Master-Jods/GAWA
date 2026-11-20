@@ -7,7 +7,12 @@ export const metadata: Metadata = {
   description:
     "Connects Filipino students and emerging talent with paid, skill-based projects while helping businesses find talent, manage work, and build professional portfolios.",
   icons: {
-    icon: "/favicon.png",
+    icon: [
+      { url: "/favicon.png", type: "image/png" },
+      { url: "/favicon.ico", sizes: "any" },
+    ],
+    shortcut: "/favicon.png",
+    apple: "/logo-mark.png",
   },
 };
 
